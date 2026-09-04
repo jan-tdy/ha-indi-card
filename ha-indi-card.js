@@ -125,71 +125,105 @@ class HaIndiCard extends HTMLElement {
     const config = this._config;
     const hass = this._hass;
 
+    if (!this._contentEl) {
+      this.shadowRoot.innerHTML = `<style>${this._styles()}</style><ha-card><div class="card-header" hidden></div><div class="card-content"></div></ha-card>`;
+      this._headerEl = this.shadowRoot.querySelector(".card-header");
+      this._contentEl = this.shadowRoot.querySelector(".card-content");
+    }
+
+    this._headerEl.hidden = !config.title;
+    this._headerEl.textContent = config.title || "";
+
+    while (this._contentEl.firstChild) {
+      this._contentEl.removeChild(this._contentEl.firstChild);
+    }
+
     const cameraObj = config.camera_entity && hass ? hass.states[config.camera_entity] : undefined;
     const showCamera = config.show_camera !== false && !!cameraObj;
-
-    const cameraHtml = showCamera
-      ? `<div class="camera" data-more-info="${config.camera_entity}">
-           ${
-             cameraObj.attributes.entity_picture
-               ? `<img src="${cameraObj.attributes.entity_picture}" alt="${
-                   cameraObj.attributes.friendly_name || config.camera_entity
-                 }">`
-               : `<div class="camera-placeholder">No image</div>`
-           }
-         </div>`
-      : "";
+    if (showCamera) {
+      this._contentEl.appendChild(this._buildCameraEl(config.camera_entity, cameraObj));
+    }
 
     const sections = config.sections || [];
-    const sectionsHtml = sections.map((section) => this._renderSection(section, hass)).join("");
+    sections.forEach((section) => {
+      this._contentEl.appendChild(this._buildSectionEl(section, hass));
+    });
 
     const isEmpty = !showCamera && sections.every((s) => !(s.entities || []).length);
-
-    this.shadowRoot.innerHTML = `
-      <style>${this._styles()}</style>
-      <ha-card>
-        ${config.title ? `<div class="card-header">${config.title}</div>` : ""}
-        <div class="card-content">
-          ${cameraHtml}
-          ${sectionsHtml}
-          ${isEmpty ? `<div class="empty">Add entities in the card editor.</div>` : ""}
-        </div>
-      </ha-card>
-    `;
+    if (isEmpty) {
+      const empty = document.createElement("div");
+      empty.className = "empty";
+      empty.textContent = "Add entities in the card editor.";
+      this._contentEl.appendChild(empty);
+    }
   }
 
-  _renderSection(section, hass) {
-    const rows = (section.entities || []).map((entityId) => this._renderRow(entityId, hass)).join("");
-    return `
-      <div class="section">
-        ${section.title ? `<div class="section-title">${section.title}</div>` : ""}
-        ${rows}
-      </div>
-    `;
+  _buildCameraEl(entityId, stateObj) {
+    const wrap = document.createElement("div");
+    wrap.className = "camera";
+    wrap.dataset.moreInfo = entityId;
+    if (stateObj.attributes.entity_picture) {
+      const img = document.createElement("img");
+      img.src = stateObj.attributes.entity_picture;
+      img.alt = stateObj.attributes.friendly_name || entityId;
+      wrap.appendChild(img);
+    } else {
+      const placeholder = document.createElement("div");
+      placeholder.className = "camera-placeholder";
+      placeholder.textContent = "No image";
+      wrap.appendChild(placeholder);
+    }
+    return wrap;
   }
 
-  _renderRow(entityId, hass) {
+  _buildSectionEl(section, hass) {
+    const box = document.createElement("div");
+    box.className = "section";
+    if (section.title) {
+      const title = document.createElement("div");
+      title.className = "section-title";
+      title.textContent = section.title;
+      box.appendChild(title);
+    }
+    (section.entities || []).forEach((entityId) => {
+      box.appendChild(this._buildRowEl(entityId, hass));
+    });
+    return box;
+  }
+
+  _buildRowEl(entityId, hass) {
     const stateObj = hass ? hass.states[entityId] : undefined;
     const domain = domainOf(entityId);
     const unavailable = !stateObj;
     const name = (stateObj && stateObj.attributes.friendly_name) || entityId;
     const icon = (stateObj && stateObj.attributes.icon) || FALLBACK_ICONS[domain] || "mdi:information-outline";
 
-    let valueHtml;
+    const row = document.createElement("div");
+    row.className = "row";
+    row.dataset.moreInfo = entityId;
+
+    const iconEl = document.createElement("ha-icon");
+    iconEl.icon = icon;
+    row.appendChild(iconEl);
+
+    const nameEl = document.createElement("span");
+    nameEl.className = "name";
+    nameEl.textContent = name;
+    row.appendChild(nameEl);
+
     if (!unavailable && TOGGLE_DOMAINS.has(domain)) {
-      const checked = stateObj.state === "on";
-      valueHtml = `<ha-switch data-toggle="${entityId}" ${checked ? "checked" : ""}></ha-switch>`;
+      const toggle = document.createElement("ha-switch");
+      toggle.dataset.toggle = entityId;
+      toggle.checked = stateObj.state === "on";
+      row.appendChild(toggle);
     } else {
-      valueHtml = `<span class="state">${unavailable ? "unavailable" : formatState(hass, stateObj)}</span>`;
+      const stateEl = document.createElement("span");
+      stateEl.className = "state";
+      stateEl.textContent = unavailable ? "unavailable" : formatState(hass, stateObj);
+      row.appendChild(stateEl);
     }
 
-    return `
-      <div class="row" data-more-info="${entityId}">
-        <ha-icon icon="${icon}"></ha-icon>
-        <span class="name">${name}</span>
-        ${valueHtml}
-      </div>
-    `;
+    return row;
   }
 
   _styles() {

@@ -21,7 +21,7 @@ An advanced Home Assistant Lovelace card for [`ha-indi-client`](https://github.c
 This card is not yet in the default HACS store. Add it manually:
 
 1. In Home Assistant, go to **HACS → Frontend → ⋮ → Custom repositories**.
-2. Add `https://github.com/jan-tdy/ha-indi-card` as category **Lovelace**.
+2. Add `https://github.com/jan-tdy/ha-indi-card` as category **Dashboard**.
 3. Install **ha-indi-card**, then reload your browser.
 
 ### Manual
