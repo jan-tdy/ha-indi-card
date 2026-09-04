@@ -2,7 +2,9 @@
 
 An advanced Home Assistant Lovelace card for [`ha-indi-client`](https://github.com/jan-tdy/ha-indi-client) — build a custom dashboard for your INDI observatory without writing YAML.
 
-> **Status:** `v1.0.0-beta.0` — first beta. Core feature set: pick entities and lay them out visually, plus an optional live camera image. More controls (grid placement, camera streaming, climate/cover/number widgets) are planned for later versions.
+> **Status:** `v1.0.0-beta.0` — first beta, and the foundation of a longer-term goal: an in-Home-Assistant alternative to imaging tools like [CCDciel](https://www.ap-i.net/ccdciel/en/start) (capture sequences, live camera view, focus/guide feedback). This release only covers the base: picking entities and laying them out visually, plus an optional live camera image.
+>
+> **Note:** `ha-indi-client` does not fetch INDI BLOB/image data yet (see its [known limitations](https://github.com/jan-tdy/ha-indi-client#known-limitations)), so there is no camera entity coming from it today. The `camera_entity` option below works with any `camera.*` entity in your system (e.g. from a different integration) — once `ha-indi-client` gains BLOB support, it'll show that image with no changes needed here.
 
 ## Features
 
@@ -56,9 +58,13 @@ sections:
 
 ## Roadmap
 
+Longer term, the goal is a dashboard that covers the same ground as dedicated astro-imaging
+software (CCDciel, EKOS/KStars) directly inside Home Assistant — planned in rough order:
+
 - Free-form grid/drag-and-drop placement.
-- Live camera streaming (not just snapshot refresh).
-- Dedicated widgets for numbers, covers, and climate entities.
+- Live camera view fed by `ha-indi-client`'s CCD/guide-camera BLOBs, once it supports them.
+- Dedicated widgets for numbers, covers, and climate entities (e.g. focuser position, dome/roof).
+- Capture sequence builder (exposure/filter/count lists) and run/status controls.
 
 ## License
 
