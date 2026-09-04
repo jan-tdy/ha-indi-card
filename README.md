@@ -1,5 +1,7 @@
 # ha-indi-card
 
+![ha-indi-card](assets/banner.svg)
+
 An advanced Home Assistant Lovelace card for [`ha-indi-client`](https://github.com/jan-tdy/ha-indi-client) — build a custom dashboard for your INDI observatory without writing YAML.
 
 > **Status:** `v1.0.0-beta.0` — first beta, and the foundation of a longer-term goal: an in-Home-Assistant alternative to imaging tools like [CCDciel](https://www.ap-i.net/ccdciel/en/start) (capture sequences, live camera view, focus/guide feedback). This release only covers the base: picking entities and laying them out visually, plus an optional live camera image.
