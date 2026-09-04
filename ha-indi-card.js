@@ -72,10 +72,27 @@ class HaIndiCard extends HTMLElement {
     if (!config || typeof config !== "object") {
       throw new Error("Invalid configuration");
     }
+    if (config.sections != null && !Array.isArray(config.sections)) {
+      throw new Error("Invalid configuration: sections must be a list");
+    }
+    const sections = (config.sections || []).map((section) => {
+      if (!section || typeof section !== "object") {
+        throw new Error("Invalid configuration: each section must be an object");
+      }
+      const entities = section.entities;
+      if (entities != null && !Array.isArray(entities)) {
+        throw new Error("Invalid configuration: section entities must be a list");
+      }
+      if (Array.isArray(entities) && entities.some((e) => typeof e !== "string")) {
+        throw new Error("Invalid configuration: section entities must be a list of entity ids");
+      }
+      return { ...section, entities: entities || [] };
+    });
+
     this._config = {
       show_camera: true,
-      sections: [],
       ...config,
+      sections,
     };
     this._render();
   }
