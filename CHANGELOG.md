@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.0.0-beta.2
+
+Tile-based rework: a real `ha-indi-client` install can expose thousands of entities, so v1.0.0-beta.1's "auto-render every discovered device" approach didn't scale. This release replaces it with a curated, combinable tile model, styled after Home Assistant's own Tile card.
+
+- New `tiles` config: an ordered list of small tiles, each one a `value`, `toggle`, `select` (dropdown), `stepper` (+/-), `coordinate` (2 entities in one tile), `image` (camera), or `handcontrol` (a compass-style press-and-hold N/S/E/W pad for mount slewing) tile.
+- The editor's device auto-discovery is repurposed into one-click "Suggested tiles": it recognizes coordinate pairs, north/south/east/west motion switches, and camera entities per `ha-indi-client` device, and offers to add the matching tile — nothing is ever added without an explicit click.
+- Manual tile composer: pick a type, pick its entity/entities via the standard searchable entity picker (fine even with a very large entity count), optionally name it, add it.
+- Removed: `auto_discover`, `config_entry_id`, `hidden_devices`, `device_order`, `camera_entity`, `show_camera`, and `sections` — superseded by `tiles`. This is a breaking config change; existing beta.1 cards need to be reconfigured.
+
 ## v1.0.0-beta.1
 
 CCDciel-style auto-discovery.

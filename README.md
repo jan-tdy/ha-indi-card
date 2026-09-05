@@ -2,18 +2,27 @@
 
 ![ha-indi-card](assets/banner.svg)
 
-An advanced Home Assistant Lovelace card for [`ha-indi-client`](https://github.com/jan-tdy/ha-indi-client) — a CCDciel-style dashboard for your INDI observatory, built automatically from whatever devices the integration finds.
+An advanced Home Assistant Lovelace card for [`ha-indi-client`](https://github.com/jan-tdy/ha-indi-client) — combine only the entities you pick into a clean, tile-style dashboard for your INDI observatory.
 
-> **Status:** `v1.0.0-beta.1` — the foundation of a longer-term goal: an in-Home-Assistant alternative to imaging tools like [CCDciel](https://www.ap-i.net/ccdciel/en/start) (capture sequences, live camera view, focus/guide feedback).
+> **Status:** `v1.0.0-beta.2` — the foundation of a longer-term goal: an in-Home-Assistant alternative to imaging tools like [CCDciel](https://www.ap-i.net/ccdciel/en/start) (capture sequences, live camera view, focus/guide feedback).
 >
-> **Note:** `ha-indi-client` does not fetch INDI BLOB/image data yet (see its [known limitations](https://github.com/jan-tdy/ha-indi-client#known-limitations)), so there is no camera entity coming from it today. The `camera_entity` option below works with any `camera.*` entity in your system (e.g. from a different integration) — once `ha-indi-client` gains BLOB support, it'll show that image with no changes needed here.
+> **Why not just render every entity?** A real `ha-indi-client` setup can expose thousands of entities (one per INDI property, across every driver on the server). This card never renders them all — you (or a one-click suggestion) pick the handful that matter, each becoming a tile, in the same visual language as Home Assistant's own Tile card.
+>
+> **Note:** `ha-indi-client` does not fetch INDI BLOB/image data yet (see its [known limitations](https://github.com/jan-tdy/ha-indi-client#known-limitations)), so there is no camera entity coming from it today. The `image` tile works with any `camera.*` entity in your system — once `ha-indi-client` gains BLOB support, point one at it with no changes needed here.
 
 ## Features
 
-- **Auto-discovery** — finds every entity belonging to the `ha-indi-client` integration on its own (via the Home Assistant entity/device registry) and groups them by INDI device. No manual entity picking required to get started.
-- **Device panels, not a flat list** — each INDI device (mount, CCD, focuser, filter wheel, dome, ...) gets its own panel with a connection indicator, sized and controlled the way the property behaves: toggles for switches, a proper dropdown for `select` entities (park/unpark, filter selection, ...), +/- steppers for numbers, and plain readouts for sensors.
-- **Live camera image** — pick any `camera.*` entity and show its current snapshot at the top of the card, with a toggle to hide it.
-- **Visual editor** — toggle auto-discovery, show/hide and reorder discovered devices, and (optionally) add extra entities by hand for anything not covered by auto-discovery — all without YAML.
+- **Tiles, not a flat list or auto-rendered panels** — every entity you add becomes its own small tile (icon, name, live value), laid out in a responsive grid in Home Assistant's own tile-card style.
+- **A tile type per kind of control**, not just a generic readout:
+  - **Value** — any sensor/state, read-only.
+  - **Toggle** — switch/light/fan, with an inline switch.
+  - **Dropdown** — `select` entities (mount park/unpark, filter wheel, ...), using Home Assistant's own dropdown component.
+  - **Stepper** — `number`/`input_number` entities with +/- buttons (focuser position, CCD target temperature, ...).
+  - **Coordinates** — two entities (e.g. RA + DEC) combined into one tile.
+  - **Camera image** — a live snapshot from any `camera.*` entity.
+  - **Hand control** — a compass-style N/S/E/W press-and-hold pad wired to four switch entities, for slewing a mount the way a real hand controller works.
+- **Smart suggestions, not automation** — the editor looks at what `ha-indi-client` actually exposes (via the device registry) and offers one-click "+ Add" suggestions for coordinate pairs, hand controls, and camera images it recognizes — but nothing is ever added without you clicking it.
+- **Fully visual editor** — pick a tile type, pick its entity/entities from the standard (searchable) Home Assistant entity picker, optionally name it, and add it; reorder or remove tiles freely. No YAML required.
 
 ## Installation
 
@@ -34,32 +43,50 @@ This card is not yet in the default HACS store. Add it manually:
 
 ## Usage
 
-Add a new card, search for **INDI Card**, and it will auto-discover your `ha-indi-client` devices with no further configuration. Use the editor to set a title, hide/reorder devices, or add extra entities. Or configure it directly in YAML:
+Add a new card, search for **INDI Card**, and use the editor: accept a suggested tile or two, then add more via the "Add a tile" composer. Or configure it directly in YAML:
 
 ```yaml
 type: custom:ha-indi-card
 title: INDI Observatory
-auto_discover: true
-hidden_devices: []
-device_order: []
-camera_entity: camera.some_other_camera
-show_camera: true
-sections:
-  - title: Weather
+tiles:
+  - type: coordinate
+    name: Mount position
     entities:
-      - sensor.outdoor_temperature
+      - sensor.telescope_simulator_ra
+      - sensor.telescope_simulator_dec
+  - type: handcontrol
+    name: Slew
+    north: switch.telescope_simulator_motion_north
+    south: switch.telescope_simulator_motion_south
+    east: switch.telescope_simulator_motion_east
+    west: switch.telescope_simulator_motion_west
+  - type: select
+    entity: select.telescope_simulator_parking
+  - type: stepper
+    name: CCD temperature
+    entity: number.ccd_simulator_temperature
+  - type: image
+    entity: camera.guide_cam
+  - type: toggle
+    entity: switch.telescope_simulator_connected
 ```
 
-| Option           | Type    | Default | Description                                                                 |
-| ---------------- | ------- | ------- | ---------------------------------------------------------------------------- |
-| `title`          | string  | —       | Card header.                                                                 |
-| `auto_discover`  | boolean | `true`  | Auto-detect `ha-indi-client` devices/entities and render them as panels.    |
-| `config_entry_id`| string  | —       | Restrict auto-discovery to one `ha-indi-client` config entry (multi-server setups). |
-| `hidden_devices` | list    | `[]`    | Device IDs to hide from the auto-discovered panels.                         |
-| `device_order`   | list    | `[]`    | Explicit device ID ordering for the auto-discovered panels.                 |
-| `camera_entity`  | string  | —       | A `camera.*` entity to show as a live image (independent of auto-discovery). |
-| `show_camera`    | boolean | `true`  | Show/hide the camera image without removing the entity.                     |
-| `sections`       | list    | `[]`    | Extra, manually-picked `{ title, entities }` groups, rendered below the auto-discovered panels. |
+| Option  | Type   | Default | Description                                             |
+| ------- | ------ | ------- | --------------------------------------------------------- |
+| `title` | string | —       | Card header.                                             |
+| `tiles` | list   | `[]`    | Ordered list of tiles — see below.                        |
+
+Each entry in `tiles` has a `type` plus fields specific to it, and an optional `name` (and `icon`) override:
+
+| `type`        | Fields                                    | Notes                                              |
+| ------------- | ------------------------------------------ | --------------------------------------------------- |
+| `value`       | `entity`                                   | Any domain; read-only.                             |
+| `toggle`      | `entity`                                   | `switch`/`input_boolean`/`light`/`fan`.             |
+| `select`      | `entity`                                   | Renders as a real dropdown.                        |
+| `stepper`     | `entity`                                   | `number`/`input_number`, uses its `min`/`max`/`step`. |
+| `coordinate`  | `entities` (list of 2+)                    | Shown stacked in one tile.                         |
+| `image`       | `entity`                                   | Any `camera.*` entity.                             |
+| `handcontrol` | `north`, `south`, `east`, `west`           | Each a `switch` entity; press-and-hold slewing.    |
 
 ## Roadmap
 
@@ -67,7 +94,7 @@ Longer term, the goal is a dashboard that covers the same ground as dedicated as
 software (CCDciel, EKOS/KStars) directly inside Home Assistant — planned in rough order:
 
 - Live camera view fed by `ha-indi-client`'s CCD/guide-camera BLOBs, once it supports them.
-- Free-form grid/drag-and-drop placement within a device panel.
+- Free-form grid placement (drag to reposition/resize tiles).
 - Dedicated widgets for covers and climate entities (e.g. dome/roof).
 - Capture sequence builder (exposure/filter/count lists) and run/status controls.
 

@@ -1,4 +1,4 @@
-const CARD_VERSION = "1.0.0-beta.1";
+const CARD_VERSION = "1.0.0-beta.2";
 const INDI_PLATFORM = "indi_client";
 
 const FALLBACK_ICONS = {
@@ -20,20 +20,29 @@ const FALLBACK_ICONS = {
   climate: "mdi:thermostat",
 };
 
-const TOGGLE_DOMAINS = new Set(["switch", "input_boolean", "light", "fan"]);
+const TOGGLE_DOMAINS = ["switch", "input_boolean", "light", "fan"];
 
-const DEVICE_KIND_ICONS = {
-  mount: "mdi:telescope",
-  camera: "mdi:camera-iris",
-  focuser: "mdi:image-filter-center-focus",
-  filterwheel: "mdi:palette-swatch",
-  dome: "mdi:garage",
-  weather: "mdi:weather-partly-cloudy",
-  hub: "mdi:server-network",
-  generic: "mdi:chip",
+const TILE_TYPES = new Set(["value", "toggle", "select", "stepper", "coordinate", "image", "handcontrol"]);
+
+const TILE_TYPE_LABELS = [
+  ["value", "Value / sensor readout"],
+  ["toggle", "Toggle (switch/light/fan)"],
+  ["select", "Dropdown (select)"],
+  ["stepper", "Number stepper"],
+  ["coordinate", "Coordinates (2 entities)"],
+  ["image", "Camera image"],
+  ["handcontrol", "Hand control (mount slew)"],
+];
+
+const TILE_TYPE_DEFAULT_ICON = {
+  value: "mdi:information-outline",
+  toggle: "mdi:toggle-switch-outline",
+  select: "mdi:format-list-bulleted",
+  stepper: "mdi:tune-variant",
+  coordinate: "mdi:crosshairs-gps",
+  image: "mdi:camera",
+  handcontrol: "mdi:telescope",
 };
-
-const DEVICE_KIND_ORDER = ["mount", "camera", "focuser", "filterwheel", "dome", "weather", "generic", "hub"];
 
 function domainOf(entityId) {
   return entityId.split(".", 1)[0];
@@ -66,22 +75,12 @@ function arrayMove(arr, from, to) {
   return copy;
 }
 
-function deviceKindOf(name) {
-  const n = (name || "").toLowerCase();
-  if (n.includes("mount") || n.includes("telescope")) return "mount";
-  if (n.includes("ccd") || n.includes("camera") || n.includes("guide")) return "camera";
-  if (n.includes("focus")) return "focuser";
-  if (n.includes("filter")) return "filterwheel";
-  if (n.includes("dome") || n.includes("roof") || n.includes("shutter")) return "dome";
-  if (n.includes("weather") || n.includes("watchdog") || n.includes("sky")) return "weather";
-  if (n.includes("server")) return "hub";
-  return "generic";
-}
-
 /**
  * Groups every entity belonging to the ha-indi-client integration by its
  * INDI device, using the entity/device registry data Home Assistant exposes
- * on the hass object (no manual entity picking needed).
+ * on the hass object. Used only to power the editor's "suggested tiles" —
+ * a real installation can have thousands of entities, so nothing here is
+ * ever rendered on the card itself without the user explicitly adding it.
  */
 function discoverIndiDevices(hass, configEntryId) {
   if (!hass || !hass.entities || !hass.devices) return [];
@@ -95,45 +94,58 @@ function discoverIndiDevices(hass, configEntryId) {
     byDevice.get(deviceId).push(entityId);
   });
 
-  const devices = Array.from(byDevice.entries()).map(([deviceId, entityIds]) => {
-    const deviceEntry = hass.devices[deviceId];
-    const name = (deviceEntry && (deviceEntry.name_by_user || deviceEntry.name)) || "INDI Device";
-    entityIds.sort();
-    return { id: deviceId, name, kind: deviceKindOf(name), entityIds };
-  });
-
-  devices.sort((a, b) => {
-    const ai = DEVICE_KIND_ORDER.indexOf(a.kind);
-    const bi = DEVICE_KIND_ORDER.indexOf(b.kind);
-    if (ai !== bi) return ai - bi;
-    return a.name.localeCompare(b.name);
-  });
-
-  return devices;
+  return Array.from(byDevice.entries())
+    .map(([deviceId, entityIds]) => {
+      const deviceEntry = hass.devices[deviceId];
+      const name = (deviceEntry && (deviceEntry.name_by_user || deviceEntry.name)) || "INDI Device";
+      entityIds.sort();
+      return { id: deviceId, name, entityIds };
+    })
+    .filter((d) => !/server/i.test(d.name))
+    .sort((a, b) => a.name.localeCompare(b.name));
 }
 
-function extractDeviceRoles(entityIds, hass) {
-  let connected;
-  let lastMessage;
-  let camera;
-  const rest = [];
-  entityIds.forEach((entityId) => {
-    const stateObj = hass.states[entityId];
-    const domain = domainOf(entityId);
-    const friendly = (stateObj && stateObj.attributes.friendly_name) || "";
-    if (domain === "camera") {
-      camera = entityId;
-    } else if (domain === "switch" && /connected/i.test(friendly)) {
-      connected = entityId;
-    } else if (domain === "binary_sensor" && /server connected/i.test(friendly)) {
-      connected = entityId;
-    } else if (domain === "sensor" && /last message/i.test(friendly)) {
-      lastMessage = entityId;
-    } else {
-      rest.push(entityId);
-    }
+function findEntityByNamePattern(entityIds, hass, pattern, domains) {
+  return entityIds.find((id) => {
+    if (domains && !domains.includes(domainOf(id))) return false;
+    const stateObj = hass.states[id];
+    const friendly = (stateObj && stateObj.attributes.friendly_name) || id;
+    return pattern.test(friendly);
   });
-  return { connected, lastMessage, camera, rest };
+}
+
+function suggestTilesForDevice(device, hass) {
+  const suggestions = [];
+
+  const ra = findEntityByNamePattern(device.entityIds, hass, /\b(ra|right ascension)\b/i, ["sensor", "number"]);
+  const dec = findEntityByNamePattern(device.entityIds, hass, /\b(dec|declination)\b/i, ["sensor", "number"]);
+  if (ra && dec) {
+    suggestions.push({
+      label: `Coordinates (${device.name})`,
+      tile: { type: "coordinate", entities: [ra, dec], name: device.name },
+    });
+  }
+
+  const north = findEntityByNamePattern(device.entityIds, hass, /north/i, ["switch"]);
+  const south = findEntityByNamePattern(device.entityIds, hass, /south/i, ["switch"]);
+  const east = findEntityByNamePattern(device.entityIds, hass, /east/i, ["switch"]);
+  const west = findEntityByNamePattern(device.entityIds, hass, /west/i, ["switch"]);
+  if (north && south && east && west) {
+    suggestions.push({
+      label: `Hand control (${device.name})`,
+      tile: { type: "handcontrol", north, south, east, west, name: device.name },
+    });
+  }
+
+  const camera = device.entityIds.find((id) => domainOf(id) === "camera");
+  if (camera) {
+    suggestions.push({
+      label: `Camera image (${device.name})`,
+      tile: { type: "image", entity: camera, name: device.name },
+    });
+  }
+
+  return suggestions;
 }
 
 class HaIndiCard extends HTMLElement {
@@ -141,15 +153,11 @@ class HaIndiCard extends HTMLElement {
     return document.createElement("ha-indi-card-editor");
   }
 
-  static getStubConfig(hass) {
-    const entityIds = hass ? Object.keys(hass.states) : [];
-    const camera = entityIds.find((id) => domainOf(id) === "camera");
+  static getStubConfig() {
     return {
       type: "custom:ha-indi-card",
       title: "INDI Observatory",
-      auto_discover: true,
-      camera_entity: camera || "",
-      show_camera: true,
+      tiles: [],
     };
   }
 
@@ -157,29 +165,33 @@ class HaIndiCard extends HTMLElement {
     if (!config || typeof config !== "object") {
       throw new Error("Invalid configuration");
     }
-    if (config.sections != null && !Array.isArray(config.sections)) {
-      throw new Error("Invalid configuration: sections must be a list");
+    if (config.tiles != null && !Array.isArray(config.tiles)) {
+      throw new Error("Invalid configuration: tiles must be a list");
     }
-    const sections = (config.sections || []).map((section) => {
-      if (!section || typeof section !== "object") {
-        throw new Error("Invalid configuration: each section must be an object");
+    const tiles = (config.tiles || []).map((tile, index) => {
+      if (!tile || typeof tile !== "object") {
+        throw new Error(`Invalid configuration: tile ${index} must be an object`);
       }
-      const entities = section.entities;
-      if (entities != null && !Array.isArray(entities)) {
-        throw new Error("Invalid configuration: section entities must be a list");
+      if (!TILE_TYPES.has(tile.type)) {
+        throw new Error(`Invalid configuration: tile ${index} has an unknown type`);
       }
-      if (Array.isArray(entities) && entities.some((e) => typeof e !== "string")) {
-        throw new Error("Invalid configuration: section entities must be a list of entity ids");
+      if (tile.type === "coordinate") {
+        if (tile.entities != null && !Array.isArray(tile.entities)) {
+          throw new Error(`Invalid configuration: tile ${index} entities must be a list`);
+        }
+      } else if (tile.type === "handcontrol") {
+        ["north", "south", "east", "west"].forEach((dir) => {
+          if (tile[dir] != null && typeof tile[dir] !== "string") {
+            throw new Error(`Invalid configuration: tile ${index} ${dir} must be an entity id`);
+          }
+        });
+      } else if (tile.entity != null && typeof tile.entity !== "string") {
+        throw new Error(`Invalid configuration: tile ${index} entity must be an entity id`);
       }
-      return { ...section, entities: entities || [] };
+      return tile;
     });
 
-    this._config = {
-      show_camera: true,
-      auto_discover: true,
-      ...config,
-      sections,
-    };
+    this._config = { ...config, tiles };
     this._render();
   }
 
@@ -193,16 +205,8 @@ class HaIndiCard extends HTMLElement {
   }
 
   getCardSize() {
-    if (!this._config) return 1;
-    const rows = (this._config.sections || []).reduce(
-      (n, s) => n + 1 + (s.entities ? s.entities.length : 0),
-      0
-    );
-    const deviceCount =
-      this._config.auto_discover !== false
-        ? discoverIndiDevices(this._hass, this._config.config_entry_id).filter((d) => d.kind !== "hub").length
-        : 0;
-    return 1 + (this._config.camera_entity && this._config.show_camera !== false ? 3 : 0) + rows + deviceCount * 3;
+    const tiles = this._config ? this._config.tiles || [] : [];
+    return Math.max(1, Math.ceil(tiles.length / 3) + 1);
   }
 
   connectedCallback() {
@@ -211,6 +215,18 @@ class HaIndiCard extends HTMLElement {
       this.shadowRoot.addEventListener("click", (ev) => this._handleClick(ev));
     }
     this._render();
+  }
+
+  disconnectedCallback() {
+    this._releaseActivePress();
+  }
+
+  _releaseActivePress() {
+    if (this._activePress && this._hass) {
+      const { entityId } = this._activePress;
+      this._hass.callService(domainOf(entityId), "turn_off", { entity_id: entityId });
+    }
+    this._activePress = null;
   }
 
   _handleClick(ev) {
@@ -227,23 +243,6 @@ class HaIndiCard extends HTMLElement {
     }
   }
 
-  _visibleDevices() {
-    const config = this._config;
-    if (config.auto_discover === false) return [];
-    const devices = discoverIndiDevices(this._hass, config.config_entry_id);
-    const hidden = new Set(config.hidden_devices || []);
-    let visible = devices.filter((d) => d.kind !== "hub" && !hidden.has(d.id));
-    if (Array.isArray(config.device_order) && config.device_order.length) {
-      const orderIndex = new Map(config.device_order.map((id, i) => [id, i]));
-      visible = visible.slice().sort((a, b) => {
-        const ai = orderIndex.has(a.id) ? orderIndex.get(a.id) : 999;
-        const bi = orderIndex.has(b.id) ? orderIndex.get(b.id) : 999;
-        return ai - bi;
-      });
-    }
-    return visible;
-  }
-
   _render() {
     if (!this.shadowRoot || !this._config) return;
     const config = this._config;
@@ -255,6 +254,11 @@ class HaIndiCard extends HTMLElement {
       this._contentEl = this.shadowRoot.querySelector(".card-content");
     }
 
+    // A re-render tears down and rebuilds every tile, including a hand-control
+    // button that may be mid-press; release it first so turn_off always fires
+    // exactly once instead of leaving the mount slewing with no way to stop it.
+    this._releaseActivePress();
+
     this._headerEl.hidden = !config.title;
     this._headerEl.textContent = config.title || "";
 
@@ -264,200 +268,276 @@ class HaIndiCard extends HTMLElement {
 
     if (!hass) return;
 
-    const autoDiscover = config.auto_discover !== false;
-    const allDevices = autoDiscover ? discoverIndiDevices(hass, config.config_entry_id) : [];
-    const hubDevice = allDevices.find((d) => d.kind === "hub");
-    if (hubDevice) {
-      const { connected } = extractDeviceRoles(hubDevice.entityIds, hass);
-      if (connected) {
-        this._contentEl.appendChild(this._buildHubStatusEl(connected, hass));
-      }
-    }
-
-    const cameraObj = config.camera_entity ? hass.states[config.camera_entity] : undefined;
-    const showCamera = config.show_camera !== false && !!cameraObj;
-    if (showCamera) {
-      this._contentEl.appendChild(this._buildCameraEl(config.camera_entity, cameraObj));
-    }
-
-    const visibleDevices = this._visibleDevices();
-    visibleDevices.forEach((device) => {
-      this._contentEl.appendChild(this._buildDevicePanelEl(device, hass));
-    });
-
-    const sections = config.sections || [];
-    if (sections.length && (visibleDevices.length || showCamera)) {
-      const divider = document.createElement("div");
-      divider.className = "section-title";
-      divider.textContent = "Other entities";
-      this._contentEl.appendChild(divider);
-    }
-    sections.forEach((section) => {
-      this._contentEl.appendChild(this._buildSectionEl(section, hass));
-    });
-
-    const isEmpty = !showCamera && !visibleDevices.length && sections.every((s) => !(s.entities || []).length);
-    if (isEmpty) {
+    const tiles = config.tiles || [];
+    if (!tiles.length) {
       const empty = document.createElement("div");
       empty.className = "empty";
-      empty.textContent = autoDiscover
-        ? "No ha-indi-client devices found yet. Make sure the integration is set up, or add entities manually in the card editor."
-        : "Add entities in the card editor.";
+      empty.textContent = "Add tiles in the card editor to show entities from ha-indi-client.";
       this._contentEl.appendChild(empty);
-    }
-  }
-
-  _buildHubStatusEl(entityId, hass) {
-    const stateObj = hass.states[entityId];
-    const on = !!stateObj && stateObj.state === "on";
-    const wrap = document.createElement("div");
-    wrap.className = "hub-status";
-    wrap.dataset.moreInfo = entityId;
-    const dot = document.createElement("span");
-    dot.className = `status-dot ${on ? "status-on" : "status-off"}`;
-    wrap.appendChild(dot);
-    const label = document.createElement("span");
-    label.textContent = on ? "INDI server connected" : "INDI server disconnected";
-    wrap.appendChild(label);
-    return wrap;
-  }
-
-  _buildDevicePanelEl(device, hass) {
-    const { connected, lastMessage, camera, rest } = extractDeviceRoles(device.entityIds, hass);
-
-    const panel = document.createElement("div");
-    panel.className = "device-panel";
-
-    const header = document.createElement("div");
-    header.className = "device-header";
-
-    const iconEl = document.createElement("ha-icon");
-    iconEl.icon = DEVICE_KIND_ICONS[device.kind] || DEVICE_KIND_ICONS.generic;
-    header.appendChild(iconEl);
-
-    const nameEl = document.createElement("span");
-    nameEl.className = "device-name";
-    nameEl.textContent = device.name;
-    header.appendChild(nameEl);
-
-    if (connected) {
-      const connStateObj = hass.states[connected];
-      if (domainOf(connected) === "switch") {
-        const toggle = document.createElement("ha-switch");
-        toggle.dataset.toggle = connected;
-        toggle.checked = !!connStateObj && connStateObj.state === "on";
-        header.appendChild(toggle);
-      } else {
-        const dot = document.createElement("span");
-        dot.className = `status-dot ${connStateObj && connStateObj.state === "on" ? "status-on" : "status-off"}`;
-        dot.dataset.moreInfo = connected;
-        header.appendChild(dot);
-      }
+      return;
     }
 
-    panel.appendChild(header);
-
-    const body = document.createElement("div");
-    body.className = "device-body";
-
-    if (camera) {
-      const cameraObj = hass.states[camera];
-      if (cameraObj) body.appendChild(this._buildCameraEl(camera, cameraObj));
-    }
-
-    rest.forEach((entityId) => {
-      body.appendChild(this._buildRowEl(entityId, hass));
+    const grid = document.createElement("div");
+    grid.className = "tiles-grid";
+    tiles.forEach((tile) => {
+      grid.appendChild(this._buildTileEl(tile, hass));
     });
-
-    panel.appendChild(body);
-
-    if (lastMessage) {
-      const msgObj = hass.states[lastMessage];
-      const footer = document.createElement("div");
-      footer.className = "device-footer";
-      footer.dataset.moreInfo = lastMessage;
-      footer.textContent = msgObj ? msgObj.state : "";
-      panel.appendChild(footer);
-    }
-
-    return panel;
+    this._contentEl.appendChild(grid);
   }
 
-  _buildCameraEl(entityId, stateObj) {
-    const wrap = document.createElement("div");
-    wrap.className = "camera";
-    wrap.dataset.moreInfo = entityId;
-    if (stateObj.attributes.entity_picture) {
-      const img = document.createElement("img");
-      img.src = stateObj.attributes.entity_picture;
-      img.alt = stateObj.attributes.friendly_name || entityId;
-      wrap.appendChild(img);
-    } else {
-      const placeholder = document.createElement("div");
-      placeholder.className = "camera-placeholder";
-      placeholder.textContent = "No image";
-      wrap.appendChild(placeholder);
+  _buildTileEl(tile, hass) {
+    switch (tile.type) {
+      case "toggle":
+        return this._buildToggleTile(tile, hass);
+      case "select":
+        return this._buildSelectTile(tile, hass);
+      case "stepper":
+        return this._buildStepperTile(tile, hass);
+      case "coordinate":
+        return this._buildCoordinateTile(tile, hass);
+      case "image":
+        return this._buildImageTile(tile, hass);
+      case "handcontrol":
+        return this._buildHandControlTile(tile);
+      default:
+        return this._buildValueTile(tile, hass);
     }
-    return wrap;
   }
 
-  _buildSectionEl(section, hass) {
-    const box = document.createElement("div");
-    box.className = "section";
-    if (section.title) {
-      const title = document.createElement("div");
-      title.className = "section-title";
-      title.textContent = section.title;
-      box.appendChild(title);
-    }
-    (section.entities || []).forEach((entityId) => {
-      box.appendChild(this._buildRowEl(entityId, hass));
-    });
-    return box;
-  }
+  _buildTileShell({ icon, name, value, moreInfoEntityId, control, footer, wide }) {
+    const tile = document.createElement("div");
+    tile.className = wide ? "tile tile-wide" : "tile";
+    if (moreInfoEntityId) tile.dataset.moreInfo = moreInfoEntityId;
 
-  _buildRowEl(entityId, hass) {
-    const stateObj = hass ? hass.states[entityId] : undefined;
-    const domain = domainOf(entityId);
-    const unavailable = !stateObj;
-    const name = (stateObj && stateObj.attributes.friendly_name) || entityId;
-    const icon = (stateObj && stateObj.attributes.icon) || FALLBACK_ICONS[domain] || "mdi:information-outline";
+    const main = document.createElement("div");
+    main.className = "tile-main";
 
-    const row = document.createElement("div");
-    row.className = "row";
-    row.dataset.moreInfo = entityId;
-
+    const iconWrap = document.createElement("div");
+    iconWrap.className = "tile-icon";
     const iconEl = document.createElement("ha-icon");
     iconEl.icon = icon;
-    row.appendChild(iconEl);
+    iconWrap.appendChild(iconEl);
+    main.appendChild(iconWrap);
 
-    const nameEl = document.createElement("span");
-    nameEl.className = "name";
+    const info = document.createElement("div");
+    info.className = "tile-info";
+    const nameEl = document.createElement("div");
+    nameEl.className = "tile-name";
     nameEl.textContent = name;
-    row.appendChild(nameEl);
+    info.appendChild(nameEl);
 
-    if (unavailable) {
-      const stateEl = document.createElement("span");
-      stateEl.className = "state";
-      stateEl.textContent = "unavailable";
-      row.appendChild(stateEl);
-    } else if (TOGGLE_DOMAINS.has(domain)) {
-      const toggle = document.createElement("ha-switch");
-      toggle.dataset.toggle = entityId;
-      toggle.checked = stateObj.state === "on";
-      row.appendChild(toggle);
-    } else if (domain === "select") {
-      row.appendChild(this._buildSelectEl(entityId, stateObj));
-    } else if (domain === "number" || domain === "input_number") {
-      row.appendChild(this._buildStepperEl(entityId, stateObj));
-    } else {
-      const stateEl = document.createElement("span");
-      stateEl.className = "state";
-      stateEl.textContent = formatState(hass, stateObj);
-      row.appendChild(stateEl);
+    if (value instanceof Node) {
+      info.appendChild(value);
+    } else if (value !== undefined) {
+      const valueEl = document.createElement("div");
+      valueEl.className = "tile-value";
+      valueEl.textContent = value;
+      info.appendChild(valueEl);
+    }
+    main.appendChild(info);
+
+    if (control) {
+      control.classList.add("tile-control");
+      main.appendChild(control);
     }
 
-    return row;
+    tile.appendChild(main);
+
+    if (footer) {
+      footer.classList.add("tile-footer");
+      tile.appendChild(footer);
+    }
+
+    return tile;
+  }
+
+  _buildValueTile(tileConfig, hass) {
+    const entityId = tileConfig.entity;
+    const stateObj = entityId && hass ? hass.states[entityId] : undefined;
+    const domain = entityId ? domainOf(entityId) : undefined;
+    const unavailable = !stateObj;
+    const name = tileConfig.name || (stateObj && stateObj.attributes.friendly_name) || entityId || "Value";
+    const icon =
+      tileConfig.icon ||
+      (stateObj && stateObj.attributes.icon) ||
+      (domain && FALLBACK_ICONS[domain]) ||
+      TILE_TYPE_DEFAULT_ICON.value;
+
+    return this._buildTileShell({
+      icon,
+      name,
+      value: unavailable ? "unavailable" : formatState(hass, stateObj),
+      moreInfoEntityId: entityId,
+    });
+  }
+
+  _buildToggleTile(tileConfig, hass) {
+    const entityId = tileConfig.entity;
+    const stateObj = entityId && hass ? hass.states[entityId] : undefined;
+    const domain = entityId ? domainOf(entityId) : undefined;
+    const unavailable = !stateObj;
+    const name = tileConfig.name || (stateObj && stateObj.attributes.friendly_name) || entityId || "Toggle";
+    const icon =
+      tileConfig.icon ||
+      (stateObj && stateObj.attributes.icon) ||
+      (domain && FALLBACK_ICONS[domain]) ||
+      TILE_TYPE_DEFAULT_ICON.toggle;
+
+    const control = document.createElement("ha-switch");
+    if (entityId) control.dataset.toggle = entityId;
+    control.checked = !unavailable && stateObj.state === "on";
+    control.disabled = unavailable;
+
+    return this._buildTileShell({
+      icon,
+      name,
+      value: unavailable ? "unavailable" : stateObj.state === "on" ? "On" : "Off",
+      moreInfoEntityId: entityId,
+      control,
+    });
+  }
+
+  _buildSelectTile(tileConfig, hass) {
+    const entityId = tileConfig.entity;
+    const stateObj = entityId && hass ? hass.states[entityId] : undefined;
+    const name = tileConfig.name || (stateObj && stateObj.attributes.friendly_name) || entityId || "Select";
+    const icon = tileConfig.icon || (stateObj && stateObj.attributes.icon) || TILE_TYPE_DEFAULT_ICON.select;
+
+    if (!stateObj) {
+      return this._buildTileShell({ icon, name, value: "unavailable", moreInfoEntityId: entityId });
+    }
+
+    const footer = document.createElement("div");
+    footer.className = "tile-select";
+    footer.appendChild(this._buildSelectEl(entityId, stateObj));
+
+    return this._buildTileShell({ icon, name, value: stateObj.state, moreInfoEntityId: entityId, footer });
+  }
+
+  _buildStepperTile(tileConfig, hass) {
+    const entityId = tileConfig.entity;
+    const stateObj = entityId && hass ? hass.states[entityId] : undefined;
+    const domain = entityId ? domainOf(entityId) : undefined;
+    const name = tileConfig.name || (stateObj && stateObj.attributes.friendly_name) || entityId || "Value";
+    const icon =
+      tileConfig.icon ||
+      (stateObj && stateObj.attributes.icon) ||
+      (domain && FALLBACK_ICONS[domain]) ||
+      TILE_TYPE_DEFAULT_ICON.stepper;
+
+    if (!stateObj) {
+      return this._buildTileShell({ icon, name, value: "unavailable", moreInfoEntityId: entityId });
+    }
+
+    const footer = document.createElement("div");
+    footer.className = "tile-stepper-footer";
+    footer.appendChild(this._buildStepperEl(entityId, stateObj));
+
+    return this._buildTileShell({ icon, name, moreInfoEntityId: entityId, footer });
+  }
+
+  _buildCoordinateTile(tileConfig, hass) {
+    const entityIds = tileConfig.entities || [];
+    const name = tileConfig.name || "Coordinates";
+    const icon = tileConfig.icon || TILE_TYPE_DEFAULT_ICON.coordinate;
+
+    const value = document.createElement("div");
+    value.className = "tile-coords";
+    entityIds.forEach((entityId) => {
+      const stateObj = hass ? hass.states[entityId] : undefined;
+      const label = (stateObj && stateObj.attributes.friendly_name) || entityId;
+      const text = stateObj ? formatState(hass, stateObj) : "unavailable";
+      const row = document.createElement("div");
+      row.className = "tile-coord-row";
+      const labelEl = document.createElement("span");
+      labelEl.className = "tile-coord-label";
+      labelEl.textContent = label;
+      const textEl = document.createElement("span");
+      textEl.textContent = text;
+      row.appendChild(labelEl);
+      row.appendChild(textEl);
+      value.appendChild(row);
+    });
+
+    return this._buildTileShell({ icon, name, value, moreInfoEntityId: entityIds[0] });
+  }
+
+  _buildImageTile(tileConfig, hass) {
+    const entityId = tileConfig.entity;
+    const stateObj = entityId && hass ? hass.states[entityId] : undefined;
+    const name = tileConfig.name || (stateObj && stateObj.attributes.friendly_name) || entityId || "Camera";
+    const icon = tileConfig.icon || TILE_TYPE_DEFAULT_ICON.image;
+
+    const footer = document.createElement("div");
+    footer.className = "tile-image";
+    if (stateObj && stateObj.attributes.entity_picture) {
+      const img = document.createElement("img");
+      img.src = stateObj.attributes.entity_picture;
+      img.alt = name;
+      footer.appendChild(img);
+    } else {
+      const placeholder = document.createElement("div");
+      placeholder.className = "tile-image-placeholder";
+      placeholder.textContent = "No image";
+      footer.appendChild(placeholder);
+    }
+
+    return this._buildTileShell({ icon, name, moreInfoEntityId: entityId, footer, wide: true });
+  }
+
+  _buildHandControlTile(tileConfig) {
+    const name = tileConfig.name || "Hand control";
+    const icon = tileConfig.icon || TILE_TYPE_DEFAULT_ICON.handcontrol;
+    const directions = { north: "mdi:chevron-up", south: "mdi:chevron-down", east: "mdi:chevron-right", west: "mdi:chevron-left" };
+
+    const pad = document.createElement("div");
+    pad.className = "handcontrol-pad";
+
+    Object.keys(directions).forEach((dir) => {
+      const entityId = tileConfig[dir];
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = `handcontrol-btn handcontrol-${dir}`;
+      btn.setAttribute("aria-label", dir.charAt(0).toUpperCase() + dir.slice(1));
+      const iconEl = document.createElement("ha-icon");
+      iconEl.icon = directions[dir];
+      btn.appendChild(iconEl);
+      if (!entityId) {
+        btn.disabled = true;
+      } else {
+        const press = (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          if (this._activePress) return;
+          this._activePress = { entityId };
+          this._hass.callService(domainOf(entityId), "turn_on", { entity_id: entityId });
+        };
+        const release = (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          if (!this._activePress || this._activePress.entityId !== entityId) return;
+          this._activePress = null;
+          this._hass.callService(domainOf(entityId), "turn_off", { entity_id: entityId });
+        };
+        btn.addEventListener("pointerdown", press);
+        btn.addEventListener("pointerup", release);
+        btn.addEventListener("pointerleave", release);
+        btn.addEventListener("pointercancel", release);
+      }
+      pad.appendChild(btn);
+    });
+
+    const center = document.createElement("div");
+    center.className = "handcontrol-center";
+    const centerIcon = document.createElement("ha-icon");
+    centerIcon.icon = icon;
+    center.appendChild(centerIcon);
+    pad.appendChild(center);
+
+    const footer = document.createElement("div");
+    footer.appendChild(pad);
+
+    return this._buildTileShell({ icon, name, footer, wide: true });
   }
 
   _buildSelectEl(entityId, stateObj) {
@@ -559,37 +639,45 @@ class HaIndiCard extends HTMLElement {
     return `
       ha-card { display: flex; flex-direction: column; }
       .card-header { font-size: 1.2em; font-weight: 500; padding: 16px 16px 0; }
-      .card-content { padding: 8px 16px 16px; display: flex; flex-direction: column; gap: 4px; }
-      .hub-status {
-        display: flex; align-items: center; gap: 8px; padding: 0 0 8px; cursor: pointer;
-        color: var(--secondary-text-color); font-size: 0.85em;
+      .card-content { padding: 8px 16px 16px; }
+      .empty { color: var(--secondary-text-color); padding: 16px 0; text-align: center; }
+
+      .tiles-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+      .tile {
+        background: var(--ha-card-background, var(--card-background-color, #fff));
+        border-radius: 12px; border: 1px solid var(--divider-color);
+        padding: 10px; display: flex; flex-direction: column; gap: 8px; cursor: pointer;
       }
-      .status-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
-      .status-on { background: var(--success-color, #43a047); }
-      .status-off { background: var(--error-color, #db4437); }
-      .camera { border-radius: 8px; overflow: hidden; cursor: pointer; margin-bottom: 8px; line-height: 0; }
-      .camera img { width: 100%; display: block; }
-      .camera-placeholder { padding: 32px; text-align: center; color: var(--secondary-text-color); }
-      .device-panel {
-        border: 1px solid var(--divider-color); border-radius: 12px; padding: 12px; margin-bottom: 12px;
+      .tile-wide { grid-column: span 2; }
+      .tile-main { display: flex; align-items: center; gap: 8px; }
+      .tile-icon {
+        flex: none; width: 36px; height: 36px; border-radius: 50%;
+        background: rgba(var(--rgb-primary-color, 3, 155, 229), 0.15);
+        display: flex; align-items: center; justify-content: center;
       }
-      .device-header { display: flex; align-items: center; gap: 8px; font-weight: 500; margin-bottom: 8px; }
-      .device-header ha-icon { color: var(--state-icon-color, var(--paper-item-icon-color)); }
-      .device-header ha-switch, .device-header .status-dot { margin-left: auto; }
-      .device-name { flex: 1; }
-      .device-body { display: flex; flex-direction: column; gap: 4px; }
-      .device-footer {
-        margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--divider-color);
-        font-size: 0.8em; font-style: italic; color: var(--secondary-text-color); cursor: pointer;
+      .tile-icon ha-icon { color: var(--primary-color); }
+      .tile-info { flex: 1; min-width: 0; }
+      .tile-name {
+        font-size: 0.8em; color: var(--secondary-text-color);
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
       }
-      .section-title {
-        font-weight: 500; color: var(--secondary-text-color); margin: 8px 0 2px;
-        text-transform: uppercase; font-size: 0.75em; letter-spacing: 0.05em;
+      .tile-value {
+        font-size: 1.1em; font-weight: 500;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
       }
-      .row { display: flex; align-items: center; gap: 12px; padding: 6px 0; cursor: pointer; }
-      .row ha-icon { color: var(--state-icon-color, var(--paper-item-icon-color)); }
-      .name { flex: 1; }
-      .state { color: var(--secondary-text-color); }
+      .tile-control { flex: none; }
+      .tile-footer { margin-top: 4px; }
+
+      .tile-coords { display: flex; flex-direction: column; gap: 2px; }
+      .tile-coord-row { display: flex; justify-content: space-between; gap: 8px; font-size: 0.95em; }
+      .tile-coord-label { color: var(--secondary-text-color); }
+
+      .tile-image { border-radius: 8px; overflow: hidden; line-height: 0; }
+      .tile-image img { width: 100%; display: block; }
+      .tile-image-placeholder { padding: 24px; text-align: center; color: var(--secondary-text-color); }
+
+      .tile-select, .tile-select ha-select { width: 100%; }
+      .tile-stepper-footer { display: flex; justify-content: center; }
       .stepper { display: flex; align-items: center; gap: 8px; }
       .stepper-btn {
         background: none; border: 1px solid var(--divider-color); border-radius: 50%;
@@ -601,26 +689,51 @@ class HaIndiCard extends HTMLElement {
         background: var(--card-background-color); color: var(--primary-text-color);
         border: 1px solid var(--divider-color); border-radius: 4px; padding: 4px 8px;
       }
-      ha-select { width: 160px; }
-      .empty { color: var(--secondary-text-color); padding: 16px 0; text-align: center; }
+
+      .handcontrol-pad {
+        display: grid; grid-template-columns: repeat(3, 48px); grid-template-rows: repeat(3, 48px);
+        gap: 4px; justify-content: center; margin: 8px auto 0;
+      }
+      .handcontrol-north { grid-column: 2; grid-row: 1; }
+      .handcontrol-west { grid-column: 1; grid-row: 2; }
+      .handcontrol-center {
+        grid-column: 2; grid-row: 2; display: flex; align-items: center; justify-content: center;
+        color: var(--secondary-text-color);
+      }
+      .handcontrol-east { grid-column: 3; grid-row: 2; }
+      .handcontrol-south { grid-column: 2; grid-row: 3; }
+      .handcontrol-btn {
+        border-radius: 50%; border: 1px solid var(--divider-color); background: none;
+        display: flex; align-items: center; justify-content: center; cursor: pointer;
+        color: var(--primary-text-color); touch-action: none; user-select: none;
+      }
+      .handcontrol-btn:active { background: var(--primary-color); color: var(--text-primary-color, #fff); }
+      .handcontrol-btn:disabled { opacity: 0.3; cursor: default; }
     `;
   }
 }
 
 class HaIndiCardEditor extends HTMLElement {
   setConfig(config) {
-    this._config = {
-      show_camera: true,
-      auto_discover: true,
-      sections: [],
-      ...config,
-    };
+    this._config = { tiles: [], ...config };
+    this._composerType = this._composerType || "value";
+    this._composerEntities = this._composerEntities || {};
     this._render();
   }
 
   set hass(hass) {
+    const first = !this._hass;
     this._hass = hass;
-    this._render();
+    // hass updates arrive on every state change system-wide. A full _render()
+    // would wipe the composer's name field and any in-progress entity-picker
+    // search/focus, so after the first paint just refresh the pickers in place.
+    if (first || !this.shadowRoot || !this.shadowRoot.firstChild) {
+      this._render();
+      return;
+    }
+    this.shadowRoot.querySelectorAll("ha-entity-picker").forEach((picker) => {
+      picker.hass = hass;
+    });
   }
 
   connectedCallback() {
@@ -643,9 +756,9 @@ class HaIndiCardEditor extends HTMLElement {
     root.className = "editor";
 
     root.appendChild(this._buildGeneralFields());
-    root.appendChild(this._buildAutoDiscoverField());
-    root.appendChild(this._buildDevicesEditor());
-    root.appendChild(this._buildSectionsEditor());
+    root.appendChild(this._buildSuggestionsEditor());
+    root.appendChild(this._buildTileListEditor());
+    root.appendChild(this._buildTileComposer());
 
     this.shadowRoot.appendChild(root);
   }
@@ -653,7 +766,6 @@ class HaIndiCardEditor extends HTMLElement {
   _buildGeneralFields() {
     const wrap = document.createElement("div");
     wrap.className = "card-config";
-
     const titleField = document.createElement("ha-textfield");
     titleField.label = "Title";
     titleField.value = this._config.title || "";
@@ -661,122 +773,79 @@ class HaIndiCardEditor extends HTMLElement {
       this._updateConfig({ ...this._config, title: ev.target.value });
     });
     wrap.appendChild(titleField);
+    return wrap;
+  }
 
-    const cameraRow = document.createElement("div");
-    cameraRow.className = "row";
-
-    const cameraPicker = document.createElement("ha-entity-picker");
-    cameraPicker.hass = this._hass;
-    cameraPicker.label = "Camera entity (optional)";
-    cameraPicker.value = this._config.camera_entity || "";
-    cameraPicker.includeDomains = ["camera"];
-    cameraPicker.style.flex = "1";
-    cameraPicker.addEventListener("value-changed", (ev) => {
-      ev.stopPropagation();
-      this._updateConfig({ ...this._config, camera_entity: ev.detail.value || "" });
+  _buildSuggestionsEditor() {
+    const devices = discoverIndiDevices(this._hass);
+    const suggestions = [];
+    devices.forEach((device) => {
+      suggestTilesForDevice(device, this._hass).forEach((s) => suggestions.push(s));
     });
-    cameraRow.appendChild(cameraPicker);
-    wrap.appendChild(cameraRow);
 
-    if (this._config.camera_entity) {
-      const switchField = document.createElement("ha-formfield");
-      switchField.label = "Show camera image";
-      const switchEl = document.createElement("ha-switch");
-      switchEl.checked = this._config.show_camera !== false;
-      switchEl.addEventListener("change", (ev) => {
-        this._updateConfig({ ...this._config, show_camera: ev.target.checked });
+    if (!suggestions.length) return document.createDocumentFragment();
+
+    const wrap = document.createElement("div");
+    wrap.className = "suggestions";
+    const heading = document.createElement("div");
+    heading.className = "heading";
+    heading.textContent = "Suggested tiles";
+    wrap.appendChild(heading);
+
+    suggestions.forEach((s) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "suggestion-btn";
+      btn.textContent = `+ ${s.label}`;
+      btn.addEventListener("click", () => {
+        const tiles = [...(this._config.tiles || []), s.tile];
+        this._updateConfig({ ...this._config, tiles });
       });
-      switchField.appendChild(switchEl);
-      wrap.appendChild(switchField);
-    }
-
-    return wrap;
-  }
-
-  _buildAutoDiscoverField() {
-    const wrap = document.createElement("div");
-    wrap.className = "card-config";
-
-    const field = document.createElement("ha-formfield");
-    field.label = "Auto-discover ha-indi-client devices";
-    const switchEl = document.createElement("ha-switch");
-    switchEl.checked = this._config.auto_discover !== false;
-    switchEl.addEventListener("change", (ev) => {
-      this._updateConfig({ ...this._config, auto_discover: ev.target.checked });
+      wrap.appendChild(btn);
     });
-    field.appendChild(switchEl);
-    wrap.appendChild(field);
 
     return wrap;
   }
 
-  _buildDevicesEditor() {
-    if (this._config.auto_discover === false) return document.createDocumentFragment();
-
-    const devices = discoverIndiDevices(this._hass, this._config.config_entry_id).filter((d) => d.kind !== "hub");
+  _buildTileListEditor() {
     const wrap = document.createElement("div");
-    wrap.className = "devices";
+    wrap.className = "tile-list";
 
     const heading = document.createElement("div");
     heading.className = "heading";
-    heading.textContent = "Discovered devices";
+    heading.textContent = "Tiles";
     wrap.appendChild(heading);
 
-    if (!devices.length) {
+    const tiles = this._config.tiles || [];
+    if (!tiles.length) {
       const note = document.createElement("div");
       note.className = "note";
-      note.textContent = "No ha-indi-client devices found yet.";
+      note.textContent = "No tiles yet — add one below.";
       wrap.appendChild(note);
-      return wrap;
     }
 
-    const hidden = new Set(this._config.hidden_devices || []);
-    const orderIndex = new Map((this._config.device_order || []).map((id, i) => [id, i]));
-    const ordered = devices.slice().sort((a, b) => {
-      const ai = orderIndex.has(a.id) ? orderIndex.get(a.id) : devices.indexOf(a);
-      const bi = orderIndex.has(b.id) ? orderIndex.get(b.id) : devices.indexOf(b);
-      return ai - bi;
-    });
-
-    ordered.forEach((device, index) => {
+    tiles.forEach((tile, index) => {
       const row = document.createElement("div");
-      row.className = "device-row";
-      if (hidden.has(device.id)) row.classList.add("device-hidden");
+      row.className = "tile-row";
 
-      const iconEl = document.createElement("ha-icon");
-      iconEl.icon = DEVICE_KIND_ICONS[device.kind] || DEVICE_KIND_ICONS.generic;
-      row.appendChild(iconEl);
-
-      const nameEl = document.createElement("span");
-      nameEl.className = "device-row-name";
-      nameEl.textContent = device.name;
-      row.appendChild(nameEl);
+      const label = document.createElement("span");
+      label.className = "tile-row-label";
+      label.textContent = this._describeTile(tile);
+      row.appendChild(label);
 
       row.appendChild(
         this._buildIconButton("mdi:arrow-up", index === 0, () => {
-          const newOrder = ordered.map((d) => d.id);
-          [newOrder[index - 1], newOrder[index]] = [newOrder[index], newOrder[index - 1]];
-          this._updateConfig({ ...this._config, device_order: newOrder });
+          this._updateConfig({ ...this._config, tiles: arrayMove(tiles, index, index - 1) });
         })
       );
       row.appendChild(
-        this._buildIconButton("mdi:arrow-down", index === ordered.length - 1, () => {
-          const newOrder = ordered.map((d) => d.id);
-          [newOrder[index + 1], newOrder[index]] = [newOrder[index], newOrder[index + 1]];
-          this._updateConfig({ ...this._config, device_order: newOrder });
+        this._buildIconButton("mdi:arrow-down", index === tiles.length - 1, () => {
+          this._updateConfig({ ...this._config, tiles: arrayMove(tiles, index, index + 1) });
         })
       );
-
-      const isHidden = hidden.has(device.id);
       row.appendChild(
-        this._buildIconButton(isHidden ? "mdi:eye-off" : "mdi:eye", false, () => {
-          const newHidden = new Set(this._config.hidden_devices || []);
-          if (isHidden) {
-            newHidden.delete(device.id);
-          } else {
-            newHidden.add(device.id);
-          }
-          this._updateConfig({ ...this._config, hidden_devices: Array.from(newHidden) });
+        this._buildIconButton("mdi:delete", false, () => {
+          this._updateConfig({ ...this._config, tiles: tiles.filter((_, i) => i !== index) });
         })
       );
 
@@ -786,143 +855,129 @@ class HaIndiCardEditor extends HTMLElement {
     return wrap;
   }
 
-  _buildSectionsEditor() {
+  _describeTile(tile) {
+    const typeLabels = {
+      value: "Value",
+      toggle: "Toggle",
+      select: "Dropdown",
+      stepper: "Stepper",
+      coordinate: "Coordinates",
+      image: "Image",
+      handcontrol: "Hand control",
+    };
+    const label = typeLabels[tile.type] || tile.type;
+    return tile.name ? `${label} — ${tile.name}` : label;
+  }
+
+  _buildTileComposer() {
     const wrap = document.createElement("div");
-    wrap.className = "sections";
+    wrap.className = "composer";
 
     const heading = document.createElement("div");
     heading.className = "heading";
-    heading.textContent = "Extra entities (advanced)";
+    heading.textContent = "Add a tile";
     wrap.appendChild(heading);
 
-    const sections = this._config.sections || [];
-    sections.forEach((section, index) => {
-      wrap.appendChild(this._buildSectionEditor(section, index, sections.length));
+    const typeSelect = document.createElement("select");
+    typeSelect.className = "native-select";
+    TILE_TYPE_LABELS.forEach(([value, label]) => {
+      const opt = document.createElement("option");
+      opt.value = value;
+      opt.textContent = label;
+      typeSelect.appendChild(opt);
     });
+    typeSelect.value = this._composerType;
+    typeSelect.addEventListener("change", (ev) => {
+      this._composerType = ev.target.value;
+      this._composerEntities = {};
+      this._render();
+    });
+    wrap.appendChild(typeSelect);
 
-    const addSectionBtn = document.createElement("button");
-    addSectionBtn.className = "add-section";
-    addSectionBtn.type = "button";
-    addSectionBtn.textContent = "+ Add section";
-    addSectionBtn.addEventListener("click", () => {
-      const newSections = [...sections, { title: "New section", entities: [] }];
-      this._updateConfig({ ...this._config, sections: newSections });
+    const fieldsWrap = document.createElement("div");
+    fieldsWrap.className = "composer-fields";
+    wrap.appendChild(fieldsWrap);
+
+    const nameField = document.createElement("ha-textfield");
+    nameField.label = "Name (optional)";
+    nameField.value = this._composerName || "";
+    nameField.addEventListener("change", (ev) => {
+      this._composerName = ev.target.value;
     });
-    wrap.appendChild(addSectionBtn);
+    fieldsWrap.appendChild(nameField);
+
+    const buildPicker = (label, domains) => {
+      const picker = document.createElement("ha-entity-picker");
+      picker.hass = this._hass;
+      picker.label = label;
+      if (domains) picker.includeDomains = domains;
+      return picker;
+    };
+
+    const type = this._composerType;
+    if (type === "coordinate") {
+      const p1 = buildPicker("Entity 1 (e.g. RA)", ["sensor", "number", "input_number"]);
+      p1.value = this._composerEntities.e1 || "";
+      p1.addEventListener("value-changed", (ev) => {
+        ev.stopPropagation();
+        this._composerEntities.e1 = ev.detail.value;
+      });
+      fieldsWrap.appendChild(p1);
+
+      const p2 = buildPicker("Entity 2 (e.g. DEC)", ["sensor", "number", "input_number"]);
+      p2.value = this._composerEntities.e2 || "";
+      p2.addEventListener("value-changed", (ev) => {
+        ev.stopPropagation();
+        this._composerEntities.e2 = ev.detail.value;
+      });
+      fieldsWrap.appendChild(p2);
+    } else if (type === "handcontrol") {
+      ["north", "south", "east", "west"].forEach((dir) => {
+        const p = buildPicker(dir.charAt(0).toUpperCase() + dir.slice(1), ["switch"]);
+        p.value = this._composerEntities[dir] || "";
+        p.addEventListener("value-changed", (ev) => {
+          ev.stopPropagation();
+          this._composerEntities[dir] = ev.detail.value;
+        });
+        fieldsWrap.appendChild(p);
+      });
+    } else {
+      const domains = type === "toggle" ? TOGGLE_DOMAINS : type === "select" ? ["select"] : type === "stepper" ? ["number", "input_number"] : type === "image" ? ["camera"] : undefined;
+      const p = buildPicker("Entity", domains);
+      p.value = this._composerEntities.entity || "";
+      p.addEventListener("value-changed", (ev) => {
+        ev.stopPropagation();
+        this._composerEntities.entity = ev.detail.value;
+      });
+      fieldsWrap.appendChild(p);
+    }
+
+    const addBtn = document.createElement("button");
+    addBtn.type = "button";
+    addBtn.className = "add-section";
+    addBtn.textContent = "+ Add tile";
+    addBtn.addEventListener("click", () => {
+      let tile;
+      if (type === "coordinate") {
+        const entities = [this._composerEntities.e1, this._composerEntities.e2].filter(Boolean);
+        if (entities.length < 2) return;
+        tile = { type: "coordinate", entities, name: this._composerName || undefined };
+      } else if (type === "handcontrol") {
+        const { north, south, east, west } = this._composerEntities;
+        if (!north && !south && !east && !west) return;
+        tile = { type: "handcontrol", north, south, east, west, name: this._composerName || undefined };
+      } else {
+        if (!this._composerEntities.entity) return;
+        tile = { type, entity: this._composerEntities.entity, name: this._composerName || undefined };
+      }
+      const tiles = [...(this._config.tiles || []), tile];
+      this._composerEntities = {};
+      this._composerName = "";
+      this._updateConfig({ ...this._config, tiles });
+    });
+    wrap.appendChild(addBtn);
 
     return wrap;
-  }
-
-  _buildSectionEditor(section, index, total) {
-    const sections = this._config.sections;
-    const box = document.createElement("div");
-    box.className = "section-box";
-
-    const header = document.createElement("div");
-    header.className = "section-header";
-
-    const titleField = document.createElement("ha-textfield");
-    titleField.label = "Section title";
-    titleField.value = section.title || "";
-    titleField.style.flex = "1";
-    titleField.addEventListener("change", (ev) => {
-      const newSections = sections.map((s, i) => (i === index ? { ...s, title: ev.target.value } : s));
-      this._updateConfig({ ...this._config, sections: newSections });
-    });
-    header.appendChild(titleField);
-
-    header.appendChild(
-      this._buildIconButton("mdi:arrow-up", index === 0, () => {
-        this._updateConfig({ ...this._config, sections: arrayMove(sections, index, index - 1) });
-      })
-    );
-    header.appendChild(
-      this._buildIconButton("mdi:arrow-down", index === total - 1, () => {
-        this._updateConfig({ ...this._config, sections: arrayMove(sections, index, index + 1) });
-      })
-    );
-    header.appendChild(
-      this._buildIconButton("mdi:delete", false, () => {
-        const newSections = sections.filter((_, i) => i !== index);
-        this._updateConfig({ ...this._config, sections: newSections });
-      })
-    );
-
-    box.appendChild(header);
-
-    const entities = section.entities || [];
-    entities.forEach((entityId, entIndex) => {
-      box.appendChild(this._buildEntityRow(index, entIndex, entityId, entities.length));
-    });
-
-    const addPicker = document.createElement("ha-entity-picker");
-    addPicker.hass = this._hass;
-    addPicker.label = "Add entity";
-    addPicker.value = "";
-    addPicker.style.marginTop = "4px";
-    addPicker.addEventListener("value-changed", (ev) => {
-      ev.stopPropagation();
-      const value = ev.detail.value;
-      if (!value) return;
-      const newSections = sections.map((s, i) =>
-        i === index ? { ...s, entities: [...(s.entities || []), value] } : s
-      );
-      this._updateConfig({ ...this._config, sections: newSections });
-    });
-    box.appendChild(addPicker);
-
-    return box;
-  }
-
-  _buildEntityRow(sectionIndex, entIndex, entityId, total) {
-    const sections = this._config.sections;
-    const row = document.createElement("div");
-    row.className = "entity-row";
-
-    const picker = document.createElement("ha-entity-picker");
-    picker.hass = this._hass;
-    picker.value = entityId;
-    picker.style.flex = "1";
-    picker.addEventListener("value-changed", (ev) => {
-      ev.stopPropagation();
-      const value = ev.detail.value;
-      const newSections = sections.map((s, i) => {
-        if (i !== sectionIndex) return s;
-        const newEntities = value
-          ? s.entities.map((e, j) => (j === entIndex ? value : e))
-          : s.entities.filter((_, j) => j !== entIndex);
-        return { ...s, entities: newEntities };
-      });
-      this._updateConfig({ ...this._config, sections: newSections });
-    });
-    row.appendChild(picker);
-
-    row.appendChild(
-      this._buildIconButton("mdi:arrow-up", entIndex === 0, () => {
-        const newSections = sections.map((s, i) =>
-          i === sectionIndex ? { ...s, entities: arrayMove(s.entities, entIndex, entIndex - 1) } : s
-        );
-        this._updateConfig({ ...this._config, sections: newSections });
-      })
-    );
-    row.appendChild(
-      this._buildIconButton("mdi:arrow-down", entIndex === total - 1, () => {
-        const newSections = sections.map((s, i) =>
-          i === sectionIndex ? { ...s, entities: arrayMove(s.entities, entIndex, entIndex + 1) } : s
-        );
-        this._updateConfig({ ...this._config, sections: newSections });
-      })
-    );
-    row.appendChild(
-      this._buildIconButton("mdi:delete", false, () => {
-        const newSections = sections.map((s, i) =>
-          i === sectionIndex ? { ...s, entities: s.entities.filter((_, j) => j !== entIndex) } : s
-        );
-        this._updateConfig({ ...this._config, sections: newSections });
-      })
-    );
-
-    return row;
   }
 
   _buildIconButton(icon, disabled, onClick) {
@@ -941,21 +996,30 @@ class HaIndiCardEditor extends HTMLElement {
     return `
       .editor { display: flex; flex-direction: column; gap: 16px; padding: 8px 0; }
       .card-config { display: flex; flex-direction: column; gap: 12px; }
-      .row { display: flex; align-items: center; gap: 8px; }
       ha-textfield, ha-entity-picker { width: 100%; }
       .heading { font-weight: 500; color: var(--secondary-text-color); }
-      .devices { display: flex; flex-direction: column; gap: 4px; }
-      .device-row { display: flex; align-items: center; gap: 4px; padding: 4px 0; }
-      .device-row-name { flex: 1; }
-      .device-hidden { opacity: 0.5; }
       .note { color: var(--secondary-text-color); font-size: 0.9em; }
-      .sections { display: flex; flex-direction: column; gap: 12px; }
-      .section-box {
-        border: 1px solid var(--divider-color); border-radius: 8px; padding: 12px;
-        display: flex; flex-direction: column; gap: 8px;
+
+      .suggestions { display: flex; flex-direction: column; gap: 4px; }
+      .suggestion-btn {
+        align-self: flex-start; background: none; border: 1px solid var(--divider-color);
+        border-radius: 8px; padding: 6px 12px; cursor: pointer; color: var(--primary-color);
       }
-      .section-header { display: flex; align-items: center; gap: 4px; }
-      .entity-row { display: flex; align-items: center; gap: 4px; }
+
+      .tile-list { display: flex; flex-direction: column; gap: 4px; }
+      .tile-row { display: flex; align-items: center; gap: 4px; padding: 4px 0; }
+      .tile-row-label { flex: 1; }
+
+      .composer {
+        display: flex; flex-direction: column; gap: 8px;
+        border-top: 1px solid var(--divider-color); padding-top: 12px;
+      }
+      .composer-fields { display: flex; flex-direction: column; gap: 8px; }
+      .native-select {
+        background: var(--card-background-color); color: var(--primary-text-color);
+        border: 1px solid var(--divider-color); border-radius: 4px; padding: 8px;
+      }
+
       .icon-btn {
         background: none; border: none; cursor: pointer; padding: 4px;
         color: var(--primary-text-color); display: flex; align-items: center;
@@ -981,7 +1045,7 @@ window.customCards.push({
   type: "ha-indi-card",
   name: "INDI Card",
   description:
-    "CCDciel-style dashboard for ha-indi-client: auto-discovers your INDI devices and lays them out as control panels, with an optional live camera image.",
+    "A Home Assistant tile-style dashboard for ha-indi-client: combine only the entities you pick — readouts, toggles, a coordinate pair, a camera image, a mount hand control — into tiles, with smart suggestions from the entities ha-indi-client exposes.",
   preview: false,
 });
 
