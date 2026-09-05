@@ -217,6 +217,18 @@ class HaIndiCard extends HTMLElement {
     this._render();
   }
 
+  disconnectedCallback() {
+    this._releaseActivePress();
+  }
+
+  _releaseActivePress() {
+    if (this._activePress && this._hass) {
+      const { entityId } = this._activePress;
+      this._hass.callService(domainOf(entityId), "turn_off", { entity_id: entityId });
+    }
+    this._activePress = null;
+  }
+
   _handleClick(ev) {
     const toggle = ev.target.closest("[data-toggle]");
     if (toggle) {
@@ -241,6 +253,11 @@ class HaIndiCard extends HTMLElement {
       this._headerEl = this.shadowRoot.querySelector(".card-header");
       this._contentEl = this.shadowRoot.querySelector(".card-content");
     }
+
+    // A re-render tears down and rebuilds every tile, including a hand-control
+    // button that may be mid-press; release it first so turn_off always fires
+    // exactly once instead of leaving the mount slewing with no way to stop it.
+    this._releaseActivePress();
 
     this._headerEl.hidden = !config.title;
     this._headerEl.textContent = config.title || "";
@@ -481,6 +498,7 @@ class HaIndiCard extends HTMLElement {
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = `handcontrol-btn handcontrol-${dir}`;
+      btn.setAttribute("aria-label", dir.charAt(0).toUpperCase() + dir.slice(1));
       const iconEl = document.createElement("ha-icon");
       iconEl.icon = directions[dir];
       btn.appendChild(iconEl);
@@ -490,11 +508,15 @@ class HaIndiCard extends HTMLElement {
         const press = (ev) => {
           ev.preventDefault();
           ev.stopPropagation();
+          if (this._activePress) return;
+          this._activePress = { entityId };
           this._hass.callService(domainOf(entityId), "turn_on", { entity_id: entityId });
         };
         const release = (ev) => {
           ev.preventDefault();
           ev.stopPropagation();
+          if (!this._activePress || this._activePress.entityId !== entityId) return;
+          this._activePress = null;
           this._hass.callService(domainOf(entityId), "turn_off", { entity_id: entityId });
         };
         btn.addEventListener("pointerdown", press);
@@ -700,8 +722,18 @@ class HaIndiCardEditor extends HTMLElement {
   }
 
   set hass(hass) {
+    const first = !this._hass;
     this._hass = hass;
-    this._render();
+    // hass updates arrive on every state change system-wide. A full _render()
+    // would wipe the composer's name field and any in-progress entity-picker
+    // search/focus, so after the first paint just refresh the pickers in place.
+    if (first || !this.shadowRoot || !this.shadowRoot.firstChild) {
+      this._render();
+      return;
+    }
+    this.shadowRoot.querySelectorAll("ha-entity-picker").forEach((picker) => {
+      picker.hass = hass;
+    });
   }
 
   connectedCallback() {
