@@ -1,4 +1,4 @@
-const CARD_VERSION = "1.0.0-beta.2";
+const CARD_VERSION = "1.0.0-beta.3";
 const INDI_PLATFORM = "indi_client";
 
 const FALLBACK_ICONS = {
@@ -22,16 +22,28 @@ const FALLBACK_ICONS = {
 
 const TOGGLE_DOMAINS = ["switch", "input_boolean", "light", "fan"];
 
-const TILE_TYPES = new Set(["value", "toggle", "select", "stepper", "coordinate", "image", "handcontrol"]);
+const TILE_TYPES = new Set([
+  "value",
+  "toggle",
+  "select",
+  "stepper",
+  "coordinate",
+  "image",
+  "handcontrol",
+  "gauge",
+  "button",
+]);
 
 const TILE_TYPE_LABELS = [
   ["value", "Value / sensor readout"],
   ["toggle", "Toggle (switch/light/fan)"],
   ["select", "Dropdown (select)"],
   ["stepper", "Number stepper"],
+  ["gauge", "Gauge (numeric, circular)"],
   ["coordinate", "Coordinates (2 entities)"],
   ["image", "Camera image"],
   ["handcontrol", "Hand control (mount slew)"],
+  ["button", "Button (run a script/scene)"],
 ];
 
 const TILE_TYPE_DEFAULT_ICON = {
@@ -39,9 +51,19 @@ const TILE_TYPE_DEFAULT_ICON = {
   toggle: "mdi:toggle-switch-outline",
   select: "mdi:format-list-bulleted",
   stepper: "mdi:tune-variant",
+  gauge: "mdi:gauge",
   coordinate: "mdi:crosshairs-gps",
   image: "mdi:camera",
   handcontrol: "mdi:telescope",
+  button: "mdi:gesture-tap-button",
+};
+
+// Default grid span [columns, rows] per tile type, used unless a tile sets
+// its own width/height (both 1-4). Image and hand-control need more room to
+// stay legible; everything else fits comfortably in a single cell.
+const TILE_DEFAULT_SPAN = {
+  image: [2, 2],
+  handcontrol: [2, 2],
 };
 
 function domainOf(entityId) {
@@ -73,6 +95,26 @@ function arrayMove(arr, from, to) {
   const [item] = copy.splice(from, 1);
   copy.splice(to, 0, item);
   return copy;
+}
+
+/**
+ * ha-indi-client's own entity names are "<device> <property>" (e.g.
+ * "EQMod Mount Celestial RA (hh:mm:ss)"), which is fine in the entity list
+ * but wraps or gets truncated to nothing useful inside a small tile. Prefer
+ * the entity registry's own (device-relative) name, strip a leading device
+ * name if the state's friendly_name still carries one, and drop a trailing
+ * parenthetical unit hint - so a tile shows "Celestial RA" instead.
+ */
+function shortEntityName(hass, entityId, stateObj) {
+  const entry = hass && hass.entities && hass.entities[entityId];
+  let name = (entry && (entry.name || entry.original_name)) || (stateObj && stateObj.attributes.friendly_name) || entityId;
+  const device = entry && hass.devices && hass.devices[entry.device_id];
+  const deviceName = device && (device.name_by_user || device.name);
+  if (deviceName && name.toLowerCase().startsWith(deviceName.toLowerCase())) {
+    const rest = name.slice(deviceName.length).trim();
+    if (rest) name = rest;
+  }
+  return name.replace(/\s*\([^)]*\)\s*$/, "") || name;
 }
 
 /**
@@ -109,8 +151,8 @@ function findEntityByNamePattern(entityIds, hass, pattern, domains) {
   return entityIds.find((id) => {
     if (domains && !domains.includes(domainOf(id))) return false;
     const stateObj = hass.states[id];
-    const friendly = (stateObj && stateObj.attributes.friendly_name) || id;
-    return pattern.test(friendly);
+    const name = shortEntityName(hass, id, stateObj);
+    return pattern.test(name);
   });
 }
 
@@ -188,6 +230,12 @@ class HaIndiCard extends HTMLElement {
       } else if (tile.entity != null && typeof tile.entity !== "string") {
         throw new Error(`Invalid configuration: tile ${index} entity must be an entity id`);
       }
+      if (tile.width != null && typeof tile.width !== "number") {
+        throw new Error(`Invalid configuration: tile ${index} width must be a number`);
+      }
+      if (tile.height != null && typeof tile.height !== "number") {
+        throw new Error(`Invalid configuration: tile ${index} height must be a number`);
+      }
       return tile;
     });
 
@@ -207,6 +255,20 @@ class HaIndiCard extends HTMLElement {
   getCardSize() {
     const tiles = this._config ? this._config.tiles || [] : [];
     return Math.max(1, Math.ceil(tiles.length / 3) + 1);
+  }
+
+  // Modern (sections-view) Home Assistant dashboards size cards on a 12-wide
+  // grid and add drag-resize handles in the dashboard editor for any card
+  // that implements this - so the card itself becomes resizable there.
+  getGridOptions() {
+    const tiles = this._config ? this._config.tiles || [] : [];
+    const rows = Math.max(2, Math.ceil(tiles.length / 3) + 1);
+    return {
+      columns: 12,
+      rows,
+      min_columns: 6,
+      min_rows: 2,
+    };
   }
 
   connectedCallback() {
@@ -286,27 +348,47 @@ class HaIndiCard extends HTMLElement {
   }
 
   _buildTileEl(tile, hass) {
+    let el;
     switch (tile.type) {
       case "toggle":
-        return this._buildToggleTile(tile, hass);
+        el = this._buildToggleTile(tile, hass);
+        break;
       case "select":
-        return this._buildSelectTile(tile, hass);
+        el = this._buildSelectTile(tile, hass);
+        break;
       case "stepper":
-        return this._buildStepperTile(tile, hass);
+        el = this._buildStepperTile(tile, hass);
+        break;
+      case "gauge":
+        el = this._buildGaugeTile(tile, hass);
+        break;
       case "coordinate":
-        return this._buildCoordinateTile(tile, hass);
+        el = this._buildCoordinateTile(tile, hass);
+        break;
       case "image":
-        return this._buildImageTile(tile, hass);
+        el = this._buildImageTile(tile, hass);
+        break;
       case "handcontrol":
-        return this._buildHandControlTile(tile);
+        el = this._buildHandControlTile(tile);
+        break;
+      case "button":
+        el = this._buildButtonTile(tile, hass);
+        break;
       default:
-        return this._buildValueTile(tile, hass);
+        el = this._buildValueTile(tile, hass);
     }
+
+    const [defWidth, defHeight] = TILE_DEFAULT_SPAN[tile.type] || [1, 1];
+    const width = Math.max(1, Math.min(4, Number(tile.width) || defWidth));
+    const height = Math.max(1, Math.min(4, Number(tile.height) || defHeight));
+    el.style.gridColumn = `span ${width}`;
+    el.style.gridRow = `span ${height}`;
+    return el;
   }
 
-  _buildTileShell({ icon, name, value, moreInfoEntityId, control, footer, wide }) {
+  _buildTileShell({ icon, name, value, moreInfoEntityId, control, footer }) {
     const tile = document.createElement("div");
-    tile.className = wide ? "tile tile-wide" : "tile";
+    tile.className = "tile";
     if (moreInfoEntityId) tile.dataset.moreInfo = moreInfoEntityId;
 
     const main = document.createElement("div");
@@ -356,7 +438,7 @@ class HaIndiCard extends HTMLElement {
     const stateObj = entityId && hass ? hass.states[entityId] : undefined;
     const domain = entityId ? domainOf(entityId) : undefined;
     const unavailable = !stateObj;
-    const name = tileConfig.name || (stateObj && stateObj.attributes.friendly_name) || entityId || "Value";
+    const name = tileConfig.name || shortEntityName(hass, entityId, stateObj) || "Value";
     const icon =
       tileConfig.icon ||
       (stateObj && stateObj.attributes.icon) ||
@@ -376,7 +458,7 @@ class HaIndiCard extends HTMLElement {
     const stateObj = entityId && hass ? hass.states[entityId] : undefined;
     const domain = entityId ? domainOf(entityId) : undefined;
     const unavailable = !stateObj;
-    const name = tileConfig.name || (stateObj && stateObj.attributes.friendly_name) || entityId || "Toggle";
+    const name = tileConfig.name || shortEntityName(hass, entityId, stateObj) || "Toggle";
     const icon =
       tileConfig.icon ||
       (stateObj && stateObj.attributes.icon) ||
@@ -400,7 +482,7 @@ class HaIndiCard extends HTMLElement {
   _buildSelectTile(tileConfig, hass) {
     const entityId = tileConfig.entity;
     const stateObj = entityId && hass ? hass.states[entityId] : undefined;
-    const name = tileConfig.name || (stateObj && stateObj.attributes.friendly_name) || entityId || "Select";
+    const name = tileConfig.name || shortEntityName(hass, entityId, stateObj) || "Select";
     const icon = tileConfig.icon || (stateObj && stateObj.attributes.icon) || TILE_TYPE_DEFAULT_ICON.select;
 
     if (!stateObj) {
@@ -418,7 +500,7 @@ class HaIndiCard extends HTMLElement {
     const entityId = tileConfig.entity;
     const stateObj = entityId && hass ? hass.states[entityId] : undefined;
     const domain = entityId ? domainOf(entityId) : undefined;
-    const name = tileConfig.name || (stateObj && stateObj.attributes.friendly_name) || entityId || "Value";
+    const name = tileConfig.name || shortEntityName(hass, entityId, stateObj) || "Value";
     const icon =
       tileConfig.icon ||
       (stateObj && stateObj.attributes.icon) ||
@@ -436,6 +518,51 @@ class HaIndiCard extends HTMLElement {
     return this._buildTileShell({ icon, name, moreInfoEntityId: entityId, footer });
   }
 
+  _buildGaugeTile(tileConfig, hass) {
+    const entityId = tileConfig.entity;
+    const stateObj = entityId && hass ? hass.states[entityId] : undefined;
+    const name = tileConfig.name || shortEntityName(hass, entityId, stateObj) || "Gauge";
+    const icon = tileConfig.icon || (stateObj && stateObj.attributes.icon) || TILE_TYPE_DEFAULT_ICON.gauge;
+
+    if (!stateObj) {
+      return this._buildTileShell({ icon, name, value: "unavailable", moreInfoEntityId: entityId });
+    }
+
+    const min = tileConfig.min != null ? Number(tileConfig.min) : Number(stateObj.attributes.min) || 0;
+    const max = tileConfig.max != null ? Number(tileConfig.max) : Number(stateObj.attributes.max) || 100;
+    const raw = Number(stateObj.state);
+    const pct = Number.isFinite(raw) ? Math.max(0, Math.min(1, (raw - min) / (max - min || 1))) : 0;
+    const circumference = 2 * Math.PI * 15.9;
+
+    const footer = document.createElement("div");
+    footer.className = "tile-gauge";
+
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 36 36");
+    svg.classList.add("gauge-svg");
+    const bg = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+    bg.setAttribute("cx", "18");
+    bg.setAttribute("cy", "18");
+    bg.setAttribute("r", "15.9");
+    bg.setAttribute("class", "gauge-bg");
+    const fg = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+    fg.setAttribute("cx", "18");
+    fg.setAttribute("cy", "18");
+    fg.setAttribute("r", "15.9");
+    fg.setAttribute("class", "gauge-fg");
+    fg.setAttribute("stroke-dasharray", `${circumference * pct} ${circumference}`);
+    svg.appendChild(bg);
+    svg.appendChild(fg);
+    footer.appendChild(svg);
+
+    const valueEl = document.createElement("div");
+    valueEl.className = "gauge-value";
+    valueEl.textContent = formatState(hass, stateObj);
+    footer.appendChild(valueEl);
+
+    return this._buildTileShell({ icon, name, moreInfoEntityId: entityId, footer });
+  }
+
   _buildCoordinateTile(tileConfig, hass) {
     const entityIds = tileConfig.entities || [];
     const name = tileConfig.name || "Coordinates";
@@ -445,7 +572,9 @@ class HaIndiCard extends HTMLElement {
     value.className = "tile-coords";
     entityIds.forEach((entityId) => {
       const stateObj = hass ? hass.states[entityId] : undefined;
-      const label = (stateObj && stateObj.attributes.friendly_name) || entityId;
+      const shortName = shortEntityName(hass, entityId, stateObj);
+      const axisMatch = shortName.match(/\b(RA|DEC|AZ|ALT)\b/i);
+      const label = axisMatch ? axisMatch[1].toUpperCase() : shortName;
       const text = stateObj ? formatState(hass, stateObj) : "unavailable";
       const row = document.createElement("div");
       row.className = "tile-coord-row";
@@ -465,7 +594,7 @@ class HaIndiCard extends HTMLElement {
   _buildImageTile(tileConfig, hass) {
     const entityId = tileConfig.entity;
     const stateObj = entityId && hass ? hass.states[entityId] : undefined;
-    const name = tileConfig.name || (stateObj && stateObj.attributes.friendly_name) || entityId || "Camera";
+    const name = tileConfig.name || shortEntityName(hass, entityId, stateObj) || "Camera";
     const icon = tileConfig.icon || TILE_TYPE_DEFAULT_ICON.image;
 
     const footer = document.createElement("div");
@@ -482,7 +611,7 @@ class HaIndiCard extends HTMLElement {
       footer.appendChild(placeholder);
     }
 
-    return this._buildTileShell({ icon, name, moreInfoEntityId: entityId, footer, wide: true });
+    return this._buildTileShell({ icon, name, moreInfoEntityId: entityId, footer });
   }
 
   _buildHandControlTile(tileConfig) {
@@ -537,7 +666,36 @@ class HaIndiCard extends HTMLElement {
     const footer = document.createElement("div");
     footer.appendChild(pad);
 
-    return this._buildTileShell({ icon, name, footer, wide: true });
+    return this._buildTileShell({ icon, name, footer });
+  }
+
+  _buildButtonTile(tileConfig, hass) {
+    const entityId = tileConfig.entity;
+    const stateObj = entityId && hass ? hass.states[entityId] : undefined;
+    const domain = entityId ? domainOf(entityId) : undefined;
+    const name = tileConfig.name || shortEntityName(hass, entityId, stateObj) || "Button";
+    const icon = tileConfig.icon || (stateObj && stateObj.attributes.icon) || TILE_TYPE_DEFAULT_ICON.button;
+
+    const control = document.createElement("button");
+    control.type = "button";
+    control.className = "tile-action-btn";
+    control.textContent = tileConfig.label || "Run";
+    control.disabled = !entityId;
+    control.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      if (!entityId) return;
+      if (domain === "script") {
+        this._hass.callService("script", "turn_on", { entity_id: entityId });
+      } else if (domain === "button") {
+        this._hass.callService("button", "press", { entity_id: entityId });
+      } else if (domain === "scene") {
+        this._hass.callService("scene", "turn_on", { entity_id: entityId });
+      } else {
+        this._hass.callService(domain, "turn_on", { entity_id: entityId });
+      }
+    });
+
+    return this._buildTileShell({ icon, name, moreInfoEntityId: entityId, control });
   }
 
   _buildSelectEl(entityId, stateObj) {
@@ -546,13 +704,18 @@ class HaIndiCard extends HTMLElement {
     if (customElements.get("ha-select") && customElements.get("mwc-list-item")) {
       const selectEl = document.createElement("ha-select");
       selectEl.naturalMenuWidth = true;
-      selectEl.value = stateObj.state;
+      selectEl.label = "";
       options.forEach((option) => {
         const item = document.createElement("mwc-list-item");
         item.value = option;
+        item.setAttribute("value", option);
         item.textContent = option;
         selectEl.appendChild(item);
       });
+      // Set the current value only after its mwc-list-item exists, otherwise
+      // ha-select has nothing to match against and shows blank until the
+      // user opens the menu themselves.
+      selectEl.value = stateObj.state;
       selectEl.addEventListener("selected", (ev) => {
         ev.stopPropagation();
         const option = options[ev.detail.index];
@@ -642,13 +805,16 @@ class HaIndiCard extends HTMLElement {
       .card-content { padding: 8px 16px 16px; }
       .empty { color: var(--secondary-text-color); padding: 16px 0; text-align: center; }
 
-      .tiles-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+      .tiles-grid {
+        display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+        grid-auto-rows: minmax(96px, auto); grid-auto-flow: dense; gap: 8px;
+      }
       .tile {
         background: var(--ha-card-background, var(--card-background-color, #fff));
         border-radius: 12px; border: 1px solid var(--divider-color);
         padding: 10px; display: flex; flex-direction: column; gap: 8px; cursor: pointer;
+        overflow: hidden;
       }
-      .tile-wide { grid-column: span 2; }
       .tile-main { display: flex; align-items: center; gap: 8px; }
       .tile-icon {
         flex: none; width: 36px; height: 36px; border-radius: 50%;
@@ -668,9 +834,28 @@ class HaIndiCard extends HTMLElement {
       .tile-control { flex: none; }
       .tile-footer { margin-top: 4px; }
 
-      .tile-coords { display: flex; flex-direction: column; gap: 2px; }
-      .tile-coord-row { display: flex; justify-content: space-between; gap: 8px; font-size: 0.95em; }
-      .tile-coord-label { color: var(--secondary-text-color); }
+      .tile-coords { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+      .tile-coord-row { display: flex; justify-content: space-between; gap: 8px; font-size: 0.95em; min-width: 0; }
+      .tile-coord-label {
+        color: var(--secondary-text-color); flex: none;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      }
+      .tile-coord-row > span:last-child { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+      .tile-gauge { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+      .gauge-svg { width: 64px; height: 64px; transform: rotate(-90deg); }
+      .gauge-bg { fill: none; stroke: var(--divider-color); stroke-width: 3; }
+      .gauge-fg {
+        fill: none; stroke: var(--primary-color); stroke-width: 3; stroke-linecap: round;
+        transition: stroke-dasharray 0.3s ease;
+      }
+      .gauge-value { font-weight: 500; }
+
+      .tile-action-btn {
+        background: var(--primary-color); color: var(--text-primary-color, #fff); border: none;
+        border-radius: 8px; padding: 6px 14px; cursor: pointer; flex: none;
+      }
+      .tile-action-btn:disabled { opacity: 0.4; cursor: default; }
 
       .tile-image { border-radius: 8px; overflow: hidden; line-height: 0; }
       .tile-image img { width: 100%; display: block; }
@@ -824,25 +1009,81 @@ class HaIndiCardEditor extends HTMLElement {
       wrap.appendChild(note);
     }
 
+    if (tiles.length > 1) {
+      const hint = document.createElement("div");
+      hint.className = "note";
+      hint.textContent = "Drag a tile by its handle to reorder it.";
+      wrap.appendChild(hint);
+    }
+
     tiles.forEach((tile, index) => {
       const row = document.createElement("div");
       row.className = "tile-row";
+      row.draggable = true;
+
+      row.addEventListener("dragstart", (ev) => {
+        this._dragIndex = index;
+        row.classList.add("dragging");
+        if (ev.dataTransfer) ev.dataTransfer.effectAllowed = "move";
+      });
+      row.addEventListener("dragend", () => {
+        row.classList.remove("dragging");
+      });
+      row.addEventListener("dragover", (ev) => {
+        ev.preventDefault();
+        row.classList.add("drag-over");
+      });
+      row.addEventListener("dragleave", () => {
+        row.classList.remove("drag-over");
+      });
+      row.addEventListener("drop", (ev) => {
+        ev.preventDefault();
+        row.classList.remove("drag-over");
+        const from = this._dragIndex;
+        this._dragIndex = undefined;
+        if (from === undefined || from === index) return;
+        this._updateConfig({ ...this._config, tiles: arrayMove(tiles, from, index) });
+      });
+
+      const grip = document.createElement("ha-icon");
+      grip.icon = "mdi:drag-vertical";
+      grip.className = "drag-handle";
+      row.appendChild(grip);
 
       const label = document.createElement("span");
       label.className = "tile-row-label";
       label.textContent = this._describeTile(tile);
       row.appendChild(label);
 
-      row.appendChild(
-        this._buildIconButton("mdi:arrow-up", index === 0, () => {
-          this._updateConfig({ ...this._config, tiles: arrayMove(tiles, index, index - 1) });
-        })
-      );
-      row.appendChild(
-        this._buildIconButton("mdi:arrow-down", index === tiles.length - 1, () => {
-          this._updateConfig({ ...this._config, tiles: arrayMove(tiles, index, index + 1) });
-        })
-      );
+      const [defWidth, defHeight] = TILE_DEFAULT_SPAN[tile.type] || [1, 1];
+      const widthInput = document.createElement("input");
+      widthInput.type = "number";
+      widthInput.min = "1";
+      widthInput.max = "4";
+      widthInput.title = "Width (grid columns, 1-4)";
+      widthInput.className = "size-input";
+      widthInput.value = String(tile.width || defWidth);
+      widthInput.addEventListener("change", (ev) => {
+        const width = Math.max(1, Math.min(4, Number(ev.target.value) || defWidth));
+        const newTiles = tiles.map((t, i) => (i === index ? { ...t, width } : t));
+        this._updateConfig({ ...this._config, tiles: newTiles });
+      });
+      row.appendChild(widthInput);
+
+      const heightInput = document.createElement("input");
+      heightInput.type = "number";
+      heightInput.min = "1";
+      heightInput.max = "4";
+      heightInput.title = "Height (grid rows, 1-4)";
+      heightInput.className = "size-input";
+      heightInput.value = String(tile.height || defHeight);
+      heightInput.addEventListener("change", (ev) => {
+        const height = Math.max(1, Math.min(4, Number(ev.target.value) || defHeight));
+        const newTiles = tiles.map((t, i) => (i === index ? { ...t, height } : t));
+        this._updateConfig({ ...this._config, tiles: newTiles });
+      });
+      row.appendChild(heightInput);
+
       row.appendChild(
         this._buildIconButton("mdi:delete", false, () => {
           this._updateConfig({ ...this._config, tiles: tiles.filter((_, i) => i !== index) });
@@ -861,9 +1102,11 @@ class HaIndiCardEditor extends HTMLElement {
       toggle: "Toggle",
       select: "Dropdown",
       stepper: "Stepper",
+      gauge: "Gauge",
       coordinate: "Coordinates",
       image: "Image",
       handcontrol: "Hand control",
+      button: "Button",
     };
     const label = typeLabels[tile.type] || tile.type;
     return tile.name ? `${label} — ${tile.name}` : label;
@@ -942,7 +1185,18 @@ class HaIndiCardEditor extends HTMLElement {
         fieldsWrap.appendChild(p);
       });
     } else {
-      const domains = type === "toggle" ? TOGGLE_DOMAINS : type === "select" ? ["select"] : type === "stepper" ? ["number", "input_number"] : type === "image" ? ["camera"] : undefined;
+      const domains =
+        type === "toggle"
+          ? TOGGLE_DOMAINS
+          : type === "select"
+            ? ["select"]
+            : type === "stepper" || type === "gauge"
+              ? ["number", "input_number", "sensor"]
+              : type === "image"
+                ? ["camera"]
+                : type === "button"
+                  ? ["script", "button", "scene"]
+                  : undefined;
       const p = buildPicker("Entity", domains);
       p.value = this._composerEntities.entity || "";
       p.addEventListener("value-changed", (ev) => {
@@ -1007,8 +1261,18 @@ class HaIndiCardEditor extends HTMLElement {
       }
 
       .tile-list { display: flex; flex-direction: column; gap: 4px; }
-      .tile-row { display: flex; align-items: center; gap: 4px; padding: 4px 0; }
+      .tile-row {
+        display: flex; align-items: center; gap: 4px; padding: 4px 0;
+        border-top: 2px solid transparent;
+      }
+      .tile-row.dragging { opacity: 0.4; }
+      .tile-row.drag-over { border-top-color: var(--primary-color); }
+      .drag-handle { cursor: grab; color: var(--secondary-text-color); flex: none; }
       .tile-row-label { flex: 1; }
+      .size-input {
+        width: 40px; text-align: center; border: 1px solid var(--divider-color);
+        border-radius: 4px; background: var(--card-background-color); color: var(--primary-text-color);
+      }
 
       .composer {
         display: flex; flex-direction: column; gap: 8px;

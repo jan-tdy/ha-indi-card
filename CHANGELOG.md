@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.0.0-beta.3
+
+Fixes the rough edges from real-world testing: entity names were too long for a tile, tiles couldn't be resized or reordered without editing YAML, and the card offered only 7 tile types.
+
+- **Short names**: tiles now prefer the entity registry's own (device-relative) name over `ha-indi-client`'s full "Device + property" friendly name, and strip a trailing `(unit hint)` — so a tile reads "Celestial RA" instead of wrapping/truncating "EQMod Mount Celestial RA (hh:mm:ss)".
+- **Resizable tiles**: each tile takes an optional `width`/`height` (1-4 grid cells; `image`/`handcontrol` default to 2×2), editable via number inputs in the editor's tile list.
+- **Resizable card**: implements Home Assistant's `getGridOptions()`, so in a sections-view dashboard the whole card gets the standard drag-resize handles.
+- **Drag-and-drop reordering**: the editor's tile list is now reordered by dragging a tile by its handle, replacing the previous up/down buttons.
+- **Two more tile types**: `gauge` (a numeric entity as a circular gauge) and `button` (one tap runs a `script`/`button`/`scene` entity).
+- Fixed the `select` tile's dropdown (`ha-select`) setting its current value before its options existed, which could leave it showing blank on first paint.
+
 ## v1.0.0-beta.2
 
 Tile-based rework: a real `ha-indi-client` install can expose thousands of entities, so v1.0.0-beta.1's "auto-render every discovered device" approach didn't scale. This release replaces it with a curated, combinable tile model, styled after Home Assistant's own Tile card.
