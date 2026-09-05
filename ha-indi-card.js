@@ -107,7 +107,7 @@ function arrayMove(arr, from, to) {
  */
 function shortEntityName(hass, entityId, stateObj) {
   const entry = hass && hass.entities && hass.entities[entityId];
-  let name = (entry && (entry.name || entry.original_name)) || (stateObj && stateObj.attributes.friendly_name) || entityId;
+  let name = (entry && (entry.name || entry.original_name)) || (stateObj && stateObj.attributes.friendly_name) || entityId || "";
   const device = entry && hass.devices && hass.devices[entry.device_id];
   const deviceName = device && (device.name_by_user || device.name);
   if (deviceName && name.toLowerCase().startsWith(deviceName.toLowerCase())) {
@@ -230,12 +230,12 @@ class HaIndiCard extends HTMLElement {
       } else if (tile.entity != null && typeof tile.entity !== "string") {
         throw new Error(`Invalid configuration: tile ${index} entity must be an entity id`);
       }
-      if (tile.width != null && typeof tile.width !== "number") {
-        throw new Error(`Invalid configuration: tile ${index} width must be a number`);
-      }
-      if (tile.height != null && typeof tile.height !== "number") {
-        throw new Error(`Invalid configuration: tile ${index} height must be a number`);
-      }
+      ["width", "height"].forEach((dim) => {
+        const value = tile[dim];
+        if (value != null && (!Number.isInteger(value) || value < 1 || value > 4)) {
+          throw new Error(`Invalid configuration: tile ${index} ${dim} must be a whole number from 1 to 4`);
+        }
+      });
       return tile;
     });
 
@@ -807,7 +807,7 @@ class HaIndiCard extends HTMLElement {
 
       .tiles-grid {
         display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-        grid-auto-rows: minmax(96px, auto); grid-auto-flow: dense; gap: 8px;
+        grid-auto-rows: minmax(96px, auto); gap: 8px;
       }
       .tile {
         background: var(--ha-card-background, var(--card-background-color, #fff));
@@ -1012,7 +1012,7 @@ class HaIndiCardEditor extends HTMLElement {
     if (tiles.length > 1) {
       const hint = document.createElement("div");
       hint.className = "note";
-      hint.textContent = "Drag a tile by its handle to reorder it.";
+      hint.textContent = "Drag a tile by its handle to reorder it, or use the arrow buttons.";
       wrap.appendChild(hint);
     }
 
@@ -1042,7 +1042,10 @@ class HaIndiCardEditor extends HTMLElement {
         const from = this._dragIndex;
         this._dragIndex = undefined;
         if (from === undefined || from === index) return;
-        this._updateConfig({ ...this._config, tiles: arrayMove(tiles, from, index) });
+        // The drop target's own index shifts left by one once the source is
+        // removed from earlier in the array, for a downward move.
+        const to = from < index ? index - 1 : index;
+        this._updateConfig({ ...this._config, tiles: arrayMove(tiles, from, to) });
       });
 
       const grip = document.createElement("ha-icon");
@@ -1060,11 +1063,12 @@ class HaIndiCardEditor extends HTMLElement {
       widthInput.type = "number";
       widthInput.min = "1";
       widthInput.max = "4";
+      widthInput.step = "1";
       widthInput.title = "Width (grid columns, 1-4)";
       widthInput.className = "size-input";
       widthInput.value = String(tile.width || defWidth);
       widthInput.addEventListener("change", (ev) => {
-        const width = Math.max(1, Math.min(4, Number(ev.target.value) || defWidth));
+        const width = Math.max(1, Math.min(4, Math.round(Number(ev.target.value)) || defWidth));
         const newTiles = tiles.map((t, i) => (i === index ? { ...t, width } : t));
         this._updateConfig({ ...this._config, tiles: newTiles });
       });
@@ -1074,16 +1078,29 @@ class HaIndiCardEditor extends HTMLElement {
       heightInput.type = "number";
       heightInput.min = "1";
       heightInput.max = "4";
+      heightInput.step = "1";
       heightInput.title = "Height (grid rows, 1-4)";
       heightInput.className = "size-input";
       heightInput.value = String(tile.height || defHeight);
       heightInput.addEventListener("change", (ev) => {
-        const height = Math.max(1, Math.min(4, Number(ev.target.value) || defHeight));
+        const height = Math.max(1, Math.min(4, Math.round(Number(ev.target.value)) || defHeight));
         const newTiles = tiles.map((t, i) => (i === index ? { ...t, height } : t));
         this._updateConfig({ ...this._config, tiles: newTiles });
       });
       row.appendChild(heightInput);
 
+      // Drag-and-drop is pointer-only; keep these so keyboard users can
+      // still reorder tiles.
+      row.appendChild(
+        this._buildIconButton("mdi:arrow-up", index === 0, () => {
+          this._updateConfig({ ...this._config, tiles: arrayMove(tiles, index, index - 1) });
+        })
+      );
+      row.appendChild(
+        this._buildIconButton("mdi:arrow-down", index === tiles.length - 1, () => {
+          this._updateConfig({ ...this._config, tiles: arrayMove(tiles, index, index + 1) });
+        })
+      );
       row.appendChild(
         this._buildIconButton("mdi:delete", false, () => {
           this._updateConfig({ ...this._config, tiles: tiles.filter((_, i) => i !== index) });
