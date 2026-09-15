@@ -1,4 +1,4 @@
-const CARD_VERSION = "1.0.0-beta.3";
+const CARD_VERSION = "1.1.0";
 const INDI_PLATFORM = "indi_client";
 
 const FALLBACK_ICONS = {
@@ -245,6 +245,13 @@ class HaIndiCard extends HTMLElement {
 
   set hass(hass) {
     this._hass = hass;
+    // hass updates arrive on every state change system-wide, and _render()
+    // tears down and rebuilds every tile - including a hand-control button
+    // that may be mid-press. Skip the rebuild while a direction is held so
+    // an unrelated state change elsewhere can't cut a slew (or a diagonal
+    // combination of slews) short; the skipped update is picked up as soon
+    // as the button is released and _render() runs again.
+    if (this._activePresses && this._activePresses.size) return;
     this._render();
   }
 
@@ -284,11 +291,12 @@ class HaIndiCard extends HTMLElement {
   }
 
   _releaseActivePress() {
-    if (this._activePress && this._hass) {
-      const { entityId } = this._activePress;
-      this._hass.callService(domainOf(entityId), "turn_off", { entity_id: entityId });
+    if (this._activePresses && this._hass) {
+      this._activePresses.forEach((entityId) => {
+        this._hass.callService(domainOf(entityId), "turn_off", { entity_id: entityId });
+      });
     }
-    this._activePress = null;
+    this._activePresses = new Set();
   }
 
   _handleClick(ev) {
@@ -637,15 +645,16 @@ class HaIndiCard extends HTMLElement {
         const press = (ev) => {
           ev.preventDefault();
           ev.stopPropagation();
-          if (this._activePress) return;
-          this._activePress = { entityId };
+          if (!this._activePresses) this._activePresses = new Set();
+          if (this._activePresses.has(entityId)) return;
+          this._activePresses.add(entityId);
           this._hass.callService(domainOf(entityId), "turn_on", { entity_id: entityId });
         };
         const release = (ev) => {
           ev.preventDefault();
           ev.stopPropagation();
-          if (!this._activePress || this._activePress.entityId !== entityId) return;
-          this._activePress = null;
+          if (!this._activePresses || !this._activePresses.has(entityId)) return;
+          this._activePresses.delete(entityId);
           this._hass.callService(domainOf(entityId), "turn_off", { entity_id: entityId });
         };
         btn.addEventListener("pointerdown", press);

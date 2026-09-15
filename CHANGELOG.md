@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.1.0
+
+- Fixed the `handcontrol` tile blocking diagonal slewing: holding one direction (e.g. north) prevented any other direction's button from responding, because a single `_activePress` field tracked at most one pressed button card-wide. Each direction is now tracked independently, so e.g. north+east can be held together.
+- Fixed a related issue that would have undermined the above: `hass` updates arrive on every Home Assistant state change system-wide, and the card fully tore down and rebuilt every tile (including a hand-control button mid-press) on each one - so any unrelated state change elsewhere could cut a slew short seconds after it started. The rebuild is now skipped while a direction is actively held.
+
 ## v1.0.0-beta.3
 
 Fixes the rough edges from real-world testing: entity names were too long for a tile, tiles couldn't be resized or reordered without editing YAML, and the card offered only 7 tile types.
