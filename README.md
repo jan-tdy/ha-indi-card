@@ -4,7 +4,7 @@
 
 An advanced Home Assistant Lovelace card for [`ha-indi-client`](https://github.com/jan-tdy/ha-indi-client) — combine only the entities you pick into a clean, tile-style, resizable dashboard for your INDI observatory.
 
-> **Status:** `v1.0.0-beta.3` — the foundation of a longer-term goal: an in-Home-Assistant alternative to imaging tools like [CCDciel](https://www.ap-i.net/ccdciel/en/start) (capture sequences, live camera view, focus/guide feedback).
+> **Status:** `v1.0.0-beta.4` — the foundation of a longer-term goal: an in-Home-Assistant alternative to imaging tools like [CCDciel](https://www.ap-i.net/ccdciel/en/start) (capture sequences, live camera view, focus/guide feedback).
 >
 > **Why not just render every entity?** A real `ha-indi-client` setup can expose thousands of entities (one per INDI property, across every driver on the server). This card never renders them all — you (or a one-click suggestion) pick the handful that matter, each becoming a tile, in the same visual language as Home Assistant's own Tile card.
 >

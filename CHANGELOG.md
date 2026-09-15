@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v1.0.0-beta.4
 
 - Fixed the `handcontrol` tile blocking diagonal slewing: holding one direction (e.g. north) prevented any other direction's button from responding, because a single `_activePress` field tracked at most one pressed button card-wide. Each direction is now tracked independently, so e.g. north+east can be held together.
 
