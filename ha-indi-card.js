@@ -1,4 +1,4 @@
-const CARD_VERSION = "1.1.0";
+const CARD_VERSION = "1.1.1";
 const INDI_PLATFORM = "indi_client";
 
 const FALLBACK_ICONS = {
@@ -1216,13 +1216,15 @@ class HaIndiCardEditor extends HTMLElement {
           ? TOGGLE_DOMAINS
           : type === "select"
             ? ["select"]
-            : type === "stepper" || type === "gauge"
-              ? ["number", "input_number", "sensor"]
-              : type === "image"
-                ? ["camera"]
-                : type === "button"
-                  ? ["script", "button", "scene"]
-                  : undefined;
+            : type === "stepper"
+              ? ["number", "input_number"]
+              : type === "gauge"
+                ? ["number", "input_number", "sensor"]
+                : type === "image"
+                  ? ["camera"]
+                  : type === "button"
+                    ? ["script", "button", "scene"]
+                    : undefined;
       const p = buildPicker("Entity", domains);
       p.value = this._composerEntities.entity || "";
       p.addEventListener("value-changed", (ev) => {
