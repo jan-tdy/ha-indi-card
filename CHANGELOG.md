@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.1.1
+
+- Fixed the tile composer offering read-only `sensor` entities for stepper tiles, whose +/- controls require writable `number` or `input_number` entities. Gauge tiles continue to support sensors.
+
 ## v1.1.0
 
 - Fixed the `handcontrol` tile blocking diagonal slewing: holding one direction (e.g. north) prevented any other direction's button from responding, because a single `_activePress` field tracked at most one pressed button card-wide. Each direction is now tracked independently, so e.g. north+east can be held together.
