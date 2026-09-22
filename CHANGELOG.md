@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.1.2
+
+- Fixed the `handcontrol` tile silently giving up if the `turn_off` service call failed on release: the button already looked released (and a re-render would even forget the direction was ever held) while the mount could still be slewing with no way to stop it. Release now keeps retrying the direction until `turn_off` actually succeeds, and shows a notification so it's obvious something needs attention.
+
 ## v1.1.1
 
 - Fixed the tile composer offering read-only `sensor` entities for stepper tiles, whose +/- controls require writable `number` or `input_number` entities. Gauge tiles continue to support sensors.

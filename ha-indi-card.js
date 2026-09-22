@@ -1,4 +1,4 @@
-const CARD_VERSION = "1.1.1";
+const CARD_VERSION = "1.1.2";
 const INDI_PLATFORM = "indi_client";
 
 const FALLBACK_ICONS = {
@@ -292,11 +292,24 @@ class HaIndiCard extends HTMLElement {
 
   _releaseActivePress() {
     if (this._activePresses && this._hass) {
-      this._activePresses.forEach((entityId) => {
-        this._hass.callService(domainOf(entityId), "turn_off", { entity_id: entityId });
-      });
+      this._activePresses.forEach((entityId) => this._releasePress(entityId));
     }
     this._activePresses = new Set();
+  }
+
+  // Calls turn_off for a held hand-control entity. If the service call fails,
+  // the button already looks released but the mount may still be slewing -
+  // re-add the entity so the next release attempt retries it, and surface
+  // the failure loudly rather than leaving it stuck silently.
+  _releasePress(entityId) {
+    this._hass.callService(domainOf(entityId), "turn_off", { entity_id: entityId }).catch((err) => {
+      if (!this._activePresses) this._activePresses = new Set();
+      this._activePresses.add(entityId);
+      console.error(`ha-indi-card: failed to release ${entityId}`, err);
+      fireEvent(this, "hass-notification", {
+        message: `Hand control: couldn't stop ${entityId} - it may still be moving. ${(err && err.message) || err}`,
+      });
+    });
   }
 
   _handleClick(ev) {
@@ -655,7 +668,7 @@ class HaIndiCard extends HTMLElement {
           ev.stopPropagation();
           if (!this._activePresses || !this._activePresses.has(entityId)) return;
           this._activePresses.delete(entityId);
-          this._hass.callService(domainOf(entityId), "turn_off", { entity_id: entityId });
+          this._releasePress(entityId);
         };
         btn.addEventListener("pointerdown", press);
         btn.addEventListener("pointerup", release);
