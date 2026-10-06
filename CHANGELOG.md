@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.1.3
+
+- Fixed the card fully tearing down and rebuilding every tile's DOM on every single `hass` update (i.e. on every Home Assistant state change system-wide, not just ones relevant to this card), which closed any open `select` tile dropdown, dropped input focus, etc. mid-use. Tiles are now built once and their live values updated in place; a full rebuild only happens when the tile list itself changes, or when a tile's entity crosses the available/unavailable boundary.
+
 ## v1.1.2
 
 - Fixed the `handcontrol` tile silently giving up if the `turn_off` service call failed on release: the button already looked released (and a re-render would even forget the direction was ever held) while the mount could still be slewing with no way to stop it. Release now keeps retrying the direction until `turn_off` actually succeeds, and shows a notification so it's obvious something needs attention.
