@@ -1,4 +1,4 @@
-const CARD_VERSION = "1.1.2";
+const CARD_VERSION = "1.1.3";
 const INDI_PLATFORM = "indi_client";
 
 const FALLBACK_ICONS = {
@@ -245,12 +245,12 @@ class HaIndiCard extends HTMLElement {
 
   set hass(hass) {
     this._hass = hass;
-    // hass updates arrive on every state change system-wide, and _render()
-    // tears down and rebuilds every tile - including a hand-control button
-    // that may be mid-press. Skip the rebuild while a direction is held so
-    // an unrelated state change elsewhere can't cut a slew (or a diagonal
-    // combination of slews) short; the skipped update is picked up as soon
-    // as the button is released and _render() runs again.
+    // hass updates arrive on every state change system-wide. _render() below
+    // refreshes existing tiles in place rather than rebuilding them, but a
+    // hand-control button mid-press must still never be cut short by an
+    // unrelated update elsewhere, so skip entirely while a direction is
+    // held; the skipped update is picked up as soon as the button is
+    // released and _render() runs again.
     if (this._activePresses && this._activePresses.size) return;
     this._render();
   }
@@ -337,74 +337,99 @@ class HaIndiCard extends HTMLElement {
       this._contentEl = this.shadowRoot.querySelector(".card-content");
     }
 
-    // A re-render tears down and rebuilds every tile, including a hand-control
-    // button that may be mid-press; release it first so turn_off always fires
-    // exactly once instead of leaving the mount slewing with no way to stop it.
-    this._releaseActivePress();
-
     this._headerEl.hidden = !config.title;
     this._headerEl.textContent = config.title || "";
+
+    const tiles = hass ? config.tiles || [] : [];
+
+    if (!hass || !tiles.length) {
+      this._releaseActivePress();
+      this._tiles = null;
+      this._tilesSource = null;
+      while (this._contentEl.firstChild) {
+        this._contentEl.removeChild(this._contentEl.firstChild);
+      }
+      if (hass && !tiles.length) {
+        const empty = document.createElement("div");
+        empty.className = "empty";
+        empty.textContent = "Add tiles in the card editor to show entities from ha-indi-client.";
+        this._contentEl.appendChild(empty);
+      }
+      return;
+    }
+
+    // The common case is a hass update from some unrelated entity changing
+    // state elsewhere on the system - the tile list itself hasn't changed.
+    // Refresh each tile's live data in place instead of tearing down and
+    // rebuilding the whole DOM tree, which used to destroy every tile's
+    // interactive elements (an open select dropdown, input focus, etc.) on
+    // every single state change. A tile's update() returns false when its
+    // built structure no longer matches reality (e.g. an entity that was
+    // unavailable at build time has since appeared, or vice versa), which
+    // falls back to a full rebuild just like a changed tile list does.
+    if (this._tilesSource === tiles) {
+      const stale = this._tiles.some((t) => t.update(hass) === false);
+      if (!stale) return;
+    }
+
+    // A full rebuild tears down and rebuilds every tile, including a
+    // hand-control button that may be mid-press; release it first so
+    // turn_off always fires exactly once instead of leaving the mount
+    // slewing with no way to stop it.
+    this._releaseActivePress();
 
     while (this._contentEl.firstChild) {
       this._contentEl.removeChild(this._contentEl.firstChild);
     }
 
-    if (!hass) return;
-
-    const tiles = config.tiles || [];
-    if (!tiles.length) {
-      const empty = document.createElement("div");
-      empty.className = "empty";
-      empty.textContent = "Add tiles in the card editor to show entities from ha-indi-client.";
-      this._contentEl.appendChild(empty);
-      return;
-    }
-
     const grid = document.createElement("div");
     grid.className = "tiles-grid";
-    tiles.forEach((tile) => {
-      grid.appendChild(this._buildTileEl(tile, hass));
+    this._tiles = tiles.map((tile) => {
+      const built = this._buildTileEl(tile, hass);
+      grid.appendChild(built.el);
+      return built;
     });
+    this._tilesSource = tiles;
     this._contentEl.appendChild(grid);
   }
 
   _buildTileEl(tile, hass) {
-    let el;
+    let built;
     switch (tile.type) {
       case "toggle":
-        el = this._buildToggleTile(tile, hass);
+        built = this._buildToggleTile(tile, hass);
         break;
       case "select":
-        el = this._buildSelectTile(tile, hass);
+        built = this._buildSelectTile(tile, hass);
         break;
       case "stepper":
-        el = this._buildStepperTile(tile, hass);
+        built = this._buildStepperTile(tile, hass);
         break;
       case "gauge":
-        el = this._buildGaugeTile(tile, hass);
+        built = this._buildGaugeTile(tile, hass);
         break;
       case "coordinate":
-        el = this._buildCoordinateTile(tile, hass);
+        built = this._buildCoordinateTile(tile, hass);
         break;
       case "image":
-        el = this._buildImageTile(tile, hass);
+        built = this._buildImageTile(tile, hass);
         break;
       case "handcontrol":
-        el = this._buildHandControlTile(tile);
+        built = this._buildHandControlTile(tile);
         break;
       case "button":
-        el = this._buildButtonTile(tile, hass);
+        built = this._buildButtonTile(tile, hass);
         break;
       default:
-        el = this._buildValueTile(tile, hass);
+        built = this._buildValueTile(tile, hass);
     }
 
     const [defWidth, defHeight] = TILE_DEFAULT_SPAN[tile.type] || [1, 1];
     const width = Math.max(1, Math.min(4, Number(tile.width) || defWidth));
     const height = Math.max(1, Math.min(4, Number(tile.height) || defHeight));
-    el.style.gridColumn = `span ${width}`;
-    el.style.gridRow = `span ${height}`;
-    return el;
+    built.el.style.gridColumn = `span ${width}`;
+    built.el.style.gridRow = `span ${height}`;
+    return built;
   }
 
   _buildTileShell({ icon, name, value, moreInfoEntityId, control, footer }) {
@@ -429,10 +454,11 @@ class HaIndiCard extends HTMLElement {
     nameEl.textContent = name;
     info.appendChild(nameEl);
 
+    let valueEl;
     if (value instanceof Node) {
       info.appendChild(value);
     } else if (value !== undefined) {
-      const valueEl = document.createElement("div");
+      valueEl = document.createElement("div");
       valueEl.className = "tile-value";
       valueEl.textContent = value;
       info.appendChild(valueEl);
@@ -451,109 +477,216 @@ class HaIndiCard extends HTMLElement {
       tile.appendChild(footer);
     }
 
-    return tile;
+    return { el: tile, iconEl, nameEl, valueEl };
   }
 
   _buildValueTile(tileConfig, hass) {
     const entityId = tileConfig.entity;
-    const stateObj = entityId && hass ? hass.states[entityId] : undefined;
-    const domain = entityId ? domainOf(entityId) : undefined;
-    const unavailable = !stateObj;
-    const name = tileConfig.name || shortEntityName(hass, entityId, stateObj) || "Value";
-    const icon =
-      tileConfig.icon ||
-      (stateObj && stateObj.attributes.icon) ||
-      (domain && FALLBACK_ICONS[domain]) ||
-      TILE_TYPE_DEFAULT_ICON.value;
+    const compute = (hass) => {
+      const stateObj = entityId && hass ? hass.states[entityId] : undefined;
+      const domain = entityId ? domainOf(entityId) : undefined;
+      const unavailable = !stateObj;
+      const name = tileConfig.name || shortEntityName(hass, entityId, stateObj) || "Value";
+      const icon =
+        tileConfig.icon ||
+        (stateObj && stateObj.attributes.icon) ||
+        (domain && FALLBACK_ICONS[domain]) ||
+        TILE_TYPE_DEFAULT_ICON.value;
+      const value = unavailable ? "unavailable" : formatState(hass, stateObj);
+      return { name, icon, value };
+    };
 
-    return this._buildTileShell({
-      icon,
-      name,
-      value: unavailable ? "unavailable" : formatState(hass, stateObj),
+    const initial = compute(hass);
+    const { el, iconEl, nameEl, valueEl } = this._buildTileShell({
+      icon: initial.icon,
+      name: initial.name,
+      value: initial.value,
       moreInfoEntityId: entityId,
     });
+
+    const update = (hass) => {
+      const state = compute(hass);
+      iconEl.icon = state.icon;
+      nameEl.textContent = state.name;
+      if (valueEl) valueEl.textContent = state.value;
+    };
+
+    return { el, update };
   }
 
   _buildToggleTile(tileConfig, hass) {
     const entityId = tileConfig.entity;
-    const stateObj = entityId && hass ? hass.states[entityId] : undefined;
-    const domain = entityId ? domainOf(entityId) : undefined;
-    const unavailable = !stateObj;
-    const name = tileConfig.name || shortEntityName(hass, entityId, stateObj) || "Toggle";
-    const icon =
-      tileConfig.icon ||
-      (stateObj && stateObj.attributes.icon) ||
-      (domain && FALLBACK_ICONS[domain]) ||
-      TILE_TYPE_DEFAULT_ICON.toggle;
+    const compute = (hass) => {
+      const stateObj = entityId && hass ? hass.states[entityId] : undefined;
+      const domain = entityId ? domainOf(entityId) : undefined;
+      const unavailable = !stateObj;
+      const name = tileConfig.name || shortEntityName(hass, entityId, stateObj) || "Toggle";
+      const icon =
+        tileConfig.icon ||
+        (stateObj && stateObj.attributes.icon) ||
+        (domain && FALLBACK_ICONS[domain]) ||
+        TILE_TYPE_DEFAULT_ICON.toggle;
+      const on = !unavailable && stateObj.state === "on";
+      return { name, icon, unavailable, on };
+    };
 
+    const initial = compute(hass);
     const control = document.createElement("ha-switch");
     if (entityId) control.dataset.toggle = entityId;
-    control.checked = !unavailable && stateObj.state === "on";
-    control.disabled = unavailable;
+    control.checked = initial.on;
+    control.disabled = initial.unavailable;
 
-    return this._buildTileShell({
-      icon,
-      name,
-      value: unavailable ? "unavailable" : stateObj.state === "on" ? "On" : "Off",
+    const { el, iconEl, nameEl, valueEl } = this._buildTileShell({
+      icon: initial.icon,
+      name: initial.name,
+      value: initial.unavailable ? "unavailable" : initial.on ? "On" : "Off",
       moreInfoEntityId: entityId,
       control,
     });
+
+    const update = (hass) => {
+      const state = compute(hass);
+      iconEl.icon = state.icon;
+      nameEl.textContent = state.name;
+      control.checked = state.on;
+      control.disabled = state.unavailable;
+      if (valueEl) valueEl.textContent = state.unavailable ? "unavailable" : state.on ? "On" : "Off";
+    };
+
+    return { el, update };
   }
 
   _buildSelectTile(tileConfig, hass) {
     const entityId = tileConfig.entity;
-    const stateObj = entityId && hass ? hass.states[entityId] : undefined;
-    const name = tileConfig.name || shortEntityName(hass, entityId, stateObj) || "Select";
-    const icon = tileConfig.icon || (stateObj && stateObj.attributes.icon) || TILE_TYPE_DEFAULT_ICON.select;
+    const computeMeta = (hass) => {
+      const stateObj = entityId && hass ? hass.states[entityId] : undefined;
+      const name = tileConfig.name || shortEntityName(hass, entityId, stateObj) || "Select";
+      const icon = tileConfig.icon || (stateObj && stateObj.attributes.icon) || TILE_TYPE_DEFAULT_ICON.select;
+      return { stateObj, name, icon };
+    };
 
-    if (!stateObj) {
-      return this._buildTileShell({ icon, name, value: "unavailable", moreInfoEntityId: entityId });
+    const initial = computeMeta(hass);
+
+    if (!initial.stateObj) {
+      const { el } = this._buildTileShell({
+        icon: initial.icon,
+        name: initial.name,
+        value: "unavailable",
+        moreInfoEntityId: entityId,
+      });
+      // The entity may appear later; signal staleness so the card rebuilds
+      // this tile (with its select control) once it does.
+      return { el, update: (hass) => !computeMeta(hass).stateObj };
     }
+
+    let currentValue = initial.stateObj.state;
+    const selectEl = this._buildSelectEl(entityId, initial.stateObj, () => currentValue);
 
     const footer = document.createElement("div");
     footer.className = "tile-select";
-    footer.appendChild(this._buildSelectEl(entityId, stateObj));
+    footer.appendChild(selectEl);
 
-    return this._buildTileShell({ icon, name, value: stateObj.state, moreInfoEntityId: entityId, footer });
+    const { el, iconEl, nameEl, valueEl } = this._buildTileShell({
+      icon: initial.icon,
+      name: initial.name,
+      value: initial.stateObj.state,
+      moreInfoEntityId: entityId,
+      footer,
+    });
+
+    const update = (hass) => {
+      const meta = computeMeta(hass);
+      if (!meta.stateObj) return false;
+      iconEl.icon = meta.icon;
+      nameEl.textContent = meta.name;
+      if (valueEl) valueEl.textContent = meta.stateObj.state;
+      currentValue = meta.stateObj.state;
+      // Sync the live select's displayed value without touching the DOM
+      // node itself, so an open dropdown stays open through this update.
+      if (selectEl.value !== currentValue) selectEl.value = currentValue;
+      return true;
+    };
+
+    return { el, update };
   }
 
   _buildStepperTile(tileConfig, hass) {
     const entityId = tileConfig.entity;
-    const stateObj = entityId && hass ? hass.states[entityId] : undefined;
-    const domain = entityId ? domainOf(entityId) : undefined;
-    const name = tileConfig.name || shortEntityName(hass, entityId, stateObj) || "Value";
-    const icon =
-      tileConfig.icon ||
-      (stateObj && stateObj.attributes.icon) ||
-      (domain && FALLBACK_ICONS[domain]) ||
-      TILE_TYPE_DEFAULT_ICON.stepper;
+    const computeMeta = (hass) => {
+      const stateObj = entityId && hass ? hass.states[entityId] : undefined;
+      const domain = entityId ? domainOf(entityId) : undefined;
+      const name = tileConfig.name || shortEntityName(hass, entityId, stateObj) || "Value";
+      const icon =
+        tileConfig.icon ||
+        (stateObj && stateObj.attributes.icon) ||
+        (domain && FALLBACK_ICONS[domain]) ||
+        TILE_TYPE_DEFAULT_ICON.stepper;
+      return { stateObj, name, icon };
+    };
 
-    if (!stateObj) {
-      return this._buildTileShell({ icon, name, value: "unavailable", moreInfoEntityId: entityId });
+    const initial = computeMeta(hass);
+    if (!initial.stateObj) {
+      const { el } = this._buildTileShell({
+        icon: initial.icon,
+        name: initial.name,
+        value: "unavailable",
+        moreInfoEntityId: entityId,
+      });
+      return { el, update: (hass) => !computeMeta(hass).stateObj };
     }
 
     const footer = document.createElement("div");
     footer.className = "tile-stepper-footer";
-    footer.appendChild(this._buildStepperEl(entityId, stateObj));
+    const { el: stepperEl, valueEl: stepperValueEl } = this._buildStepperEl(entityId, initial.stateObj);
+    footer.appendChild(stepperEl);
 
-    return this._buildTileShell({ icon, name, moreInfoEntityId: entityId, footer });
+    const { el, iconEl, nameEl } = this._buildTileShell({
+      icon: initial.icon,
+      name: initial.name,
+      moreInfoEntityId: entityId,
+      footer,
+    });
+
+    const update = (hass) => {
+      const meta = computeMeta(hass);
+      if (!meta.stateObj) return false;
+      iconEl.icon = meta.icon;
+      nameEl.textContent = meta.name;
+      stepperValueEl.textContent = formatState(hass, meta.stateObj);
+      return true;
+    };
+
+    return { el, update };
   }
 
   _buildGaugeTile(tileConfig, hass) {
     const entityId = tileConfig.entity;
-    const stateObj = entityId && hass ? hass.states[entityId] : undefined;
-    const name = tileConfig.name || shortEntityName(hass, entityId, stateObj) || "Gauge";
-    const icon = tileConfig.icon || (stateObj && stateObj.attributes.icon) || TILE_TYPE_DEFAULT_ICON.gauge;
+    const computeMeta = (hass) => {
+      const stateObj = entityId && hass ? hass.states[entityId] : undefined;
+      const name = tileConfig.name || shortEntityName(hass, entityId, stateObj) || "Gauge";
+      const icon = tileConfig.icon || (stateObj && stateObj.attributes.icon) || TILE_TYPE_DEFAULT_ICON.gauge;
+      return { stateObj, name, icon };
+    };
 
-    if (!stateObj) {
-      return this._buildTileShell({ icon, name, value: "unavailable", moreInfoEntityId: entityId });
+    const initial = computeMeta(hass);
+    if (!initial.stateObj) {
+      const { el } = this._buildTileShell({
+        icon: initial.icon,
+        name: initial.name,
+        value: "unavailable",
+        moreInfoEntityId: entityId,
+      });
+      return { el, update: (hass) => !computeMeta(hass).stateObj };
     }
 
-    const min = tileConfig.min != null ? Number(tileConfig.min) : Number(stateObj.attributes.min) || 0;
-    const max = tileConfig.max != null ? Number(tileConfig.max) : Number(stateObj.attributes.max) || 100;
-    const raw = Number(stateObj.state);
-    const pct = Number.isFinite(raw) ? Math.max(0, Math.min(1, (raw - min) / (max - min || 1))) : 0;
     const circumference = 2 * Math.PI * 15.9;
+    const computeDasharray = (stateObj) => {
+      const min = tileConfig.min != null ? Number(tileConfig.min) : Number(stateObj.attributes.min) || 0;
+      const max = tileConfig.max != null ? Number(tileConfig.max) : Number(stateObj.attributes.max) || 100;
+      const raw = Number(stateObj.state);
+      const pct = Number.isFinite(raw) ? Math.max(0, Math.min(1, (raw - min) / (max - min || 1))) : 0;
+      return `${circumference * pct} ${circumference}`;
+    };
 
     const footer = document.createElement("div");
     footer.className = "tile-gauge";
@@ -571,17 +704,34 @@ class HaIndiCard extends HTMLElement {
     fg.setAttribute("cy", "18");
     fg.setAttribute("r", "15.9");
     fg.setAttribute("class", "gauge-fg");
-    fg.setAttribute("stroke-dasharray", `${circumference * pct} ${circumference}`);
+    fg.setAttribute("stroke-dasharray", computeDasharray(initial.stateObj));
     svg.appendChild(bg);
     svg.appendChild(fg);
     footer.appendChild(svg);
 
     const valueEl = document.createElement("div");
     valueEl.className = "gauge-value";
-    valueEl.textContent = formatState(hass, stateObj);
+    valueEl.textContent = formatState(hass, initial.stateObj);
     footer.appendChild(valueEl);
 
-    return this._buildTileShell({ icon, name, moreInfoEntityId: entityId, footer });
+    const { el, iconEl, nameEl } = this._buildTileShell({
+      icon: initial.icon,
+      name: initial.name,
+      moreInfoEntityId: entityId,
+      footer,
+    });
+
+    const update = (hass) => {
+      const meta = computeMeta(hass);
+      if (!meta.stateObj) return false;
+      iconEl.icon = meta.icon;
+      nameEl.textContent = meta.name;
+      fg.setAttribute("stroke-dasharray", computeDasharray(meta.stateObj));
+      valueEl.textContent = formatState(hass, meta.stateObj);
+      return true;
+    };
+
+    return { el, update };
   }
 
   _buildCoordinateTile(tileConfig, hass) {
@@ -591,40 +741,54 @@ class HaIndiCard extends HTMLElement {
 
     const value = document.createElement("div");
     value.className = "tile-coords";
-    entityIds.forEach((entityId) => {
-      const stateObj = hass ? hass.states[entityId] : undefined;
-      const shortName = shortEntityName(hass, entityId, stateObj);
-      const axisMatch = shortName.match(/\b(RA|DEC|AZ|ALT)\b/i);
-      const label = axisMatch ? axisMatch[1].toUpperCase() : shortName;
-      const text = stateObj ? formatState(hass, stateObj) : "unavailable";
+    const rows = entityIds.map((entityId) => {
       const row = document.createElement("div");
       row.className = "tile-coord-row";
       const labelEl = document.createElement("span");
       labelEl.className = "tile-coord-label";
-      labelEl.textContent = label;
       const textEl = document.createElement("span");
-      textEl.textContent = text;
       row.appendChild(labelEl);
       row.appendChild(textEl);
       value.appendChild(row);
+      return { entityId, labelEl, textEl };
     });
 
-    return this._buildTileShell({ icon, name, value, moreInfoEntityId: entityIds[0] });
+    const updateRows = (hass) => {
+      rows.forEach(({ entityId, labelEl, textEl }) => {
+        const stateObj = hass ? hass.states[entityId] : undefined;
+        const shortName = shortEntityName(hass, entityId, stateObj);
+        const axisMatch = shortName.match(/\b(RA|DEC|AZ|ALT)\b/i);
+        labelEl.textContent = axisMatch ? axisMatch[1].toUpperCase() : shortName;
+        textEl.textContent = stateObj ? formatState(hass, stateObj) : "unavailable";
+      });
+    };
+    updateRows(hass);
+
+    const { el } = this._buildTileShell({ icon, name, value, moreInfoEntityId: entityIds[0] });
+
+    return { el, update: updateRows };
   }
 
   _buildImageTile(tileConfig, hass) {
     const entityId = tileConfig.entity;
-    const stateObj = entityId && hass ? hass.states[entityId] : undefined;
-    const name = tileConfig.name || shortEntityName(hass, entityId, stateObj) || "Camera";
+    const computeMeta = (hass) => {
+      const stateObj = entityId && hass ? hass.states[entityId] : undefined;
+      const name = tileConfig.name || shortEntityName(hass, entityId, stateObj) || "Camera";
+      const picture = stateObj && stateObj.attributes.entity_picture;
+      return { name, picture };
+    };
     const icon = tileConfig.icon || TILE_TYPE_DEFAULT_ICON.image;
 
+    const initial = computeMeta(hass);
     const footer = document.createElement("div");
     footer.className = "tile-image";
-    if (stateObj && stateObj.attributes.entity_picture) {
-      const img = document.createElement("img");
-      img.src = stateObj.attributes.entity_picture;
-      img.alt = name;
-      footer.appendChild(img);
+
+    let imgEl;
+    if (initial.picture) {
+      imgEl = document.createElement("img");
+      imgEl.src = initial.picture;
+      imgEl.alt = initial.name;
+      footer.appendChild(imgEl);
     } else {
       const placeholder = document.createElement("div");
       placeholder.className = "tile-image-placeholder";
@@ -632,7 +796,23 @@ class HaIndiCard extends HTMLElement {
       footer.appendChild(placeholder);
     }
 
-    return this._buildTileShell({ icon, name, moreInfoEntityId: entityId, footer });
+    const { el, nameEl } = this._buildTileShell({ icon, name: initial.name, moreInfoEntityId: entityId, footer });
+
+    const update = (hass) => {
+      const meta = computeMeta(hass);
+      // Whether the entity currently has a picture decides whether the tile
+      // shows an <img> or the placeholder div; that structure was fixed at
+      // build time, so a transition between the two needs a full rebuild.
+      if (!!meta.picture !== !!initial.picture) return false;
+      nameEl.textContent = meta.name;
+      if (imgEl && meta.picture && imgEl.src !== meta.picture) {
+        imgEl.src = meta.picture;
+        imgEl.alt = meta.name;
+      }
+      return true;
+    };
+
+    return { el, update };
   }
 
   _buildHandControlTile(tileConfig) {
@@ -688,15 +868,24 @@ class HaIndiCard extends HTMLElement {
     const footer = document.createElement("div");
     footer.appendChild(pad);
 
-    return this._buildTileShell({ icon, name, footer });
+    const { el } = this._buildTileShell({ icon, name, footer });
+    // Nothing here depends on hass - the directional buttons just fire
+    // services against the entity ids from the tile config - so there is
+    // never anything to refresh.
+    return { el, update: () => {} };
   }
 
   _buildButtonTile(tileConfig, hass) {
     const entityId = tileConfig.entity;
-    const stateObj = entityId && hass ? hass.states[entityId] : undefined;
     const domain = entityId ? domainOf(entityId) : undefined;
-    const name = tileConfig.name || shortEntityName(hass, entityId, stateObj) || "Button";
-    const icon = tileConfig.icon || (stateObj && stateObj.attributes.icon) || TILE_TYPE_DEFAULT_ICON.button;
+    const computeMeta = (hass) => {
+      const stateObj = entityId && hass ? hass.states[entityId] : undefined;
+      const name = tileConfig.name || shortEntityName(hass, entityId, stateObj) || "Button";
+      const icon = tileConfig.icon || (stateObj && stateObj.attributes.icon) || TILE_TYPE_DEFAULT_ICON.button;
+      return { name, icon };
+    };
+
+    const initial = computeMeta(hass);
 
     const control = document.createElement("button");
     control.type = "button";
@@ -717,10 +906,23 @@ class HaIndiCard extends HTMLElement {
       }
     });
 
-    return this._buildTileShell({ icon, name, moreInfoEntityId: entityId, control });
+    const { el, iconEl, nameEl } = this._buildTileShell({
+      icon: initial.icon,
+      name: initial.name,
+      moreInfoEntityId: entityId,
+      control,
+    });
+
+    const update = (hass) => {
+      const meta = computeMeta(hass);
+      iconEl.icon = meta.icon;
+      nameEl.textContent = meta.name;
+    };
+
+    return { el, update };
   }
 
-  _buildSelectEl(entityId, stateObj) {
+  _buildSelectEl(entityId, stateObj, getCurrentValue) {
     const options = stateObj.attributes.options || [];
 
     if (customElements.get("ha-select") && customElements.get("mwc-list-item")) {
@@ -741,7 +943,7 @@ class HaIndiCard extends HTMLElement {
       selectEl.addEventListener("selected", (ev) => {
         ev.stopPropagation();
         const option = options[ev.detail.index];
-        if (option && option !== stateObj.state) {
+        if (option && option !== getCurrentValue()) {
           this._hass.callService("select", "select_option", { entity_id: entityId, option });
         }
       });
@@ -781,7 +983,11 @@ class HaIndiCard extends HTMLElement {
     };
 
     const setValue = (delta) => {
-      const next = clamp(Number(stateObj.state) + delta);
+      // The element persists across hass updates now (see _render), so read
+      // the live state here rather than closing over the stateObj this was
+      // built with - that reference would otherwise go stale immediately.
+      const current = (this._hass && this._hass.states[entityId]) || stateObj;
+      const next = clamp(Number(current.state) + delta);
       this._hass.callService(domain, "set_value", { entity_id: entityId, value: next });
     };
 
@@ -817,7 +1023,7 @@ class HaIndiCard extends HTMLElement {
     });
     wrap.appendChild(plusBtn);
 
-    return wrap;
+    return { el: wrap, valueEl };
   }
 
   _styles() {
