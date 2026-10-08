@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.1.4
+
+- Fixed the `handcontrol` tile's directional buttons having an `aria-label` but doing nothing when activated from the keyboard (Enter/Space): they only listened for `pointerdown`/`pointerup`, which keyboard activation never fires. They now also respond to keyboard press-and-hold, and release if focus moves away while held.
+
 ## v1.1.3
 
 - Fixed the card fully tearing down and rebuilding every tile's DOM on every single `hass` update (i.e. on every Home Assistant state change system-wide, not just ones relevant to this card), which closed any open `select` tile dropdown, dropped input focus, etc. mid-use. Tiles are now built once and their live values updated in place; a full rebuild only happens when the tile list itself changes, or when a tile's entity crosses the available/unavailable boundary.

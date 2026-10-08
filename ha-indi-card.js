@@ -1,4 +1,4 @@
-const CARD_VERSION = "1.1.3";
+const CARD_VERSION = "1.1.4";
 const INDI_PLATFORM = "indi_client";
 
 const FALLBACK_ICONS = {
@@ -854,6 +854,16 @@ class HaIndiCard extends HTMLElement {
         btn.addEventListener("pointerup", release);
         btn.addEventListener("pointerleave", release);
         btn.addEventListener("pointercancel", release);
+        btn.addEventListener("keydown", (ev) => {
+          if (ev.key !== "Enter" && ev.key !== " " && ev.key !== "Spacebar") return;
+          if (ev.repeat) return;
+          press(ev);
+        });
+        btn.addEventListener("keyup", (ev) => {
+          if (ev.key !== "Enter" && ev.key !== " " && ev.key !== "Spacebar") return;
+          release(ev);
+        });
+        btn.addEventListener("blur", release);
       }
       pad.appendChild(btn);
     });
