@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.4.1
+
+- Fixed the `stepper` tile's +/- buttons sending `set_value` with a `NaN` value (serialized as `null` over the websocket) when the backing entity's state was `unavailable`/`unknown` or otherwise non-numeric. The buttons are now disabled whenever the entity has no usable numeric value, instead of silently issuing a bad service call.
+
 ## v1.1.4
 
 - Fixed the `handcontrol` tile's directional buttons having an `aria-label` but doing nothing when activated from the keyboard (Enter/Space): they only listened for `pointerdown`/`pointerup`, which keyboard activation never fires. They now also respond to keyboard press-and-hold, and release if focus moves away while held.
