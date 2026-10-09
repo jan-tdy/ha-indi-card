@@ -1,4 +1,4 @@
-const CARD_VERSION = "1.1.4";
+const CARD_VERSION = "1.1.5";
 const INDI_PLATFORM = "indi_client";
 
 const FALLBACK_ICONS = {
@@ -637,7 +637,7 @@ class HaIndiCard extends HTMLElement {
 
     const footer = document.createElement("div");
     footer.className = "tile-stepper-footer";
-    const { el: stepperEl, valueEl: stepperValueEl } = this._buildStepperEl(entityId, initial.stateObj);
+    const { el: stepperEl, valueEl: stepperValueEl, setDisabled } = this._buildStepperEl(entityId, initial.stateObj);
     footer.appendChild(stepperEl);
 
     const { el, iconEl, nameEl } = this._buildTileShell({
@@ -653,6 +653,7 @@ class HaIndiCard extends HTMLElement {
       iconEl.icon = meta.icon;
       nameEl.textContent = meta.name;
       stepperValueEl.textContent = formatState(hass, meta.stateObj);
+      setDisabled(Number.isNaN(Number(meta.stateObj.state)));
       return true;
     };
 
@@ -997,7 +998,12 @@ class HaIndiCard extends HTMLElement {
       // the live state here rather than closing over the stateObj this was
       // built with - that reference would otherwise go stale immediately.
       const current = (this._hass && this._hass.states[entityId]) || stateObj;
-      const next = clamp(Number(current.state) + delta);
+      const currentNum = Number(current.state);
+      // current.state is "unavailable"/"unknown" (or otherwise non-numeric)
+      // when the entity has no usable value - bail out rather than sending
+      // set_value with NaN, which serializes to null over the websocket.
+      if (Number.isNaN(currentNum)) return;
+      const next = clamp(currentNum + delta);
       this._hass.callService(domain, "set_value", { entity_id: entityId, value: next });
     };
 
@@ -1033,7 +1039,13 @@ class HaIndiCard extends HTMLElement {
     });
     wrap.appendChild(plusBtn);
 
-    return { el: wrap, valueEl };
+    const setDisabled = (disabled) => {
+      minusBtn.disabled = disabled;
+      plusBtn.disabled = disabled;
+    };
+    setDisabled(Number.isNaN(Number(stateObj.state)));
+
+    return { el: wrap, valueEl, setDisabled };
   }
 
   _styles() {
@@ -1107,6 +1119,7 @@ class HaIndiCard extends HTMLElement {
         width: 28px; height: 28px; display: flex; align-items: center; justify-content: center;
         cursor: pointer; color: var(--primary-text-color); flex: none;
       }
+      .stepper-btn:disabled { opacity: 0.4; cursor: default; }
       .stepper-value { min-width: 64px; text-align: center; font-variant-numeric: tabular-nums; }
       .native-select {
         background: var(--card-background-color); color: var(--primary-text-color);
