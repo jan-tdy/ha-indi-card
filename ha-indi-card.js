@@ -1,4 +1,4 @@
-const CARD_VERSION = "1.1.5";
+const CARD_VERSION = "1.4.1";
 const INDI_PLATFORM = "indi_client";
 
 const FALLBACK_ICONS = {
