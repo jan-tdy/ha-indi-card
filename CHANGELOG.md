@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.4.2
+
+- Fixed the `image` tile reassigning `img.src` on every Home Assistant state change: the update compared the resolved absolute `img.src` URL against a typically relative `entity_picture`, so they never matched and the snapshot was refetched/flickered continuously. The update now compares against the `src` attribute.
+- Fixed the `stepper` tile sending float-error values such as `0.30000000000000004` for fractional steps (which `set_value` step validation may reject), and losing the second of two quick clicks because both read the same pre-round-trip hass state. Values are rounded to the step's decimals, and a pending target is kept until the live state catches up.
+
 ## v1.4.1
 
 - Fixed the `stepper` tile's +/- buttons sending `set_value` with a `NaN` value (serialized as `null` over the websocket) when the backing entity's state was `unavailable`/`unknown` or otherwise non-numeric. The buttons are now disabled whenever the entity has no usable numeric value, instead of silently issuing a bad service call.

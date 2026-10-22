@@ -1,4 +1,4 @@
-const CARD_VERSION = "1.4.1";
+const CARD_VERSION = "1.4.2";
 const INDI_PLATFORM = "indi_client";
 
 const FALLBACK_ICONS = {
@@ -68,6 +68,21 @@ const TILE_DEFAULT_SPAN = {
 
 function domainOf(entityId) {
   return entityId.split(".", 1)[0];
+}
+
+function stepDecimalPlaces(step) {
+  if (!Number.isFinite(step)) return 0;
+  const text = String(step);
+  if (/e-/i.test(text)) {
+    return Number(text.split(/e-/i)[1]) || 0;
+  }
+  const dot = text.indexOf(".");
+  return dot === -1 ? 0 : text.length - dot - 1;
+}
+
+function roundToStep(value, step) {
+  const places = stepDecimalPlaces(step);
+  return Number((Math.round(value / step) * step).toFixed(places));
 }
 
 function fireEvent(node, type, detail = {}) {
@@ -637,7 +652,7 @@ class HaIndiCard extends HTMLElement {
 
     const footer = document.createElement("div");
     footer.className = "tile-stepper-footer";
-    const { el: stepperEl, valueEl: stepperValueEl, setDisabled } = this._buildStepperEl(entityId, initial.stateObj);
+    const { el: stepperEl, applyLiveState } = this._buildStepperEl(entityId, initial.stateObj);
     footer.appendChild(stepperEl);
 
     const { el, iconEl, nameEl } = this._buildTileShell({
@@ -652,8 +667,7 @@ class HaIndiCard extends HTMLElement {
       if (!meta.stateObj) return false;
       iconEl.icon = meta.icon;
       nameEl.textContent = meta.name;
-      stepperValueEl.textContent = formatState(hass, meta.stateObj);
-      setDisabled(Number.isNaN(Number(meta.stateObj.state)));
+      applyLiveState(meta.stateObj);
       return true;
     };
 
@@ -806,7 +820,10 @@ class HaIndiCard extends HTMLElement {
       // build time, so a transition between the two needs a full rebuild.
       if (!!meta.picture !== !!initial.picture) return false;
       nameEl.textContent = meta.name;
-      if (imgEl && meta.picture && imgEl.src !== meta.picture) {
+      // imgEl.src is the resolved absolute URL; entity_picture is typically a
+      // relative path, so comparing the two is always unequal and would
+      // reassign src (and retrigger a fetch) on every hass update.
+      if (imgEl && meta.picture && imgEl.getAttribute("src") !== meta.picture) {
         imgEl.src = meta.picture;
         imgEl.alt = meta.name;
       }
@@ -993,17 +1010,28 @@ class HaIndiCard extends HTMLElement {
       return out;
     };
 
+    // Optimistic local target so two quick clicks don't both read the same
+    // hass state (which only updates after the device round trip) and send
+    // the same value twice. Cleared once the live state catches up.
+    let pending = null;
+
     const setValue = (delta) => {
       // The element persists across hass updates now (see _render), so read
       // the live state here rather than closing over the stateObj this was
       // built with - that reference would otherwise go stale immediately.
       const current = (this._hass && this._hass.states[entityId]) || stateObj;
-      const currentNum = Number(current.state);
+      const liveNum = Number(current.state);
+      const currentNum = pending !== null ? pending : liveNum;
       // current.state is "unavailable"/"unknown" (or otherwise non-numeric)
       // when the entity has no usable value - bail out rather than sending
       // set_value with NaN, which serializes to null over the websocket.
       if (Number.isNaN(currentNum)) return;
-      const next = clamp(currentNum + delta);
+      // Fractional steps (0.1, 0.5) accumulate binary float error
+      // (0.1+0.2 = 0.30000000000000004) that number entities may reject.
+      const next = clamp(roundToStep(currentNum + delta, step));
+      pending = next;
+      const unit = current.attributes && current.attributes.unit_of_measurement;
+      valueEl.textContent = unit ? `${next} ${unit}` : String(next);
       this._hass.callService(domain, "set_value", { entity_id: entityId, value: next });
     };
 
@@ -1045,7 +1073,18 @@ class HaIndiCard extends HTMLElement {
     };
     setDisabled(Number.isNaN(Number(stateObj.state)));
 
-    return { el: wrap, valueEl, setDisabled };
+    const applyLiveState = (liveStateObj) => {
+      const liveNum = Number(liveStateObj.state);
+      if (pending !== null && !Number.isNaN(liveNum) && roundToStep(liveNum, step) === pending) {
+        pending = null;
+      }
+      setDisabled(Number.isNaN(liveNum));
+      if (pending === null) {
+        valueEl.textContent = formatState(this._hass, liveStateObj);
+      }
+    };
+
+    return { el: wrap, valueEl, applyLiveState };
   }
 
   _styles() {
