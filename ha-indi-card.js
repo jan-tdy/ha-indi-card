@@ -861,9 +861,10 @@ class HaIndiCard extends HTMLElement {
     const { el, nameEl } = this._buildTileShell({ icon, name: initial.name, moreInfoEntityId: entityId, footer });
 
     let lastUpdated = initial.lastUpdated;
+    let currentPicture = initial.picture;
     const refreshImage = () => {
-      if (!imgEl || !initial.picture) return;
-      const url = new URL(initial.picture, window.location.href);
+      if (!imgEl || !currentPicture) return;
+      const url = new URL(currentPicture, window.location.href);
       url.searchParams.set("ha_indi_refresh", String(Date.now()));
       imgEl.src = url.toString();
     };
@@ -876,7 +877,8 @@ class HaIndiCard extends HTMLElement {
       const meta = computeMeta(hass);
       if (!!meta.picture !== !!initial.picture) return false;
       nameEl.textContent = meta.name;
-      if (imgEl && meta.picture && meta.lastUpdated !== lastUpdated) {
+      if (imgEl && meta.picture && (meta.picture !== currentPicture || meta.lastUpdated !== lastUpdated)) {
+        currentPicture = meta.picture;
         lastUpdated = meta.lastUpdated;
         refreshImage();
         imgEl.alt = meta.name;
