@@ -1,4 +1,4 @@
-const CARD_VERSION = "1.4.2";
+const CARD_VERSION = "1.4.3";
 const INDI_PLATFORM = "indi_client";
 
 const FALLBACK_ICONS = {
@@ -242,6 +242,11 @@ class HaIndiCard extends HTMLElement {
             throw new Error(`Invalid configuration: tile ${index} ${dir} must be an entity id`);
           }
         });
+        if (tile.max_hold_seconds != null && (!Number.isFinite(tile.max_hold_seconds) || tile.max_hold_seconds < 1 || tile.max_hold_seconds > 3600)) {
+          throw new Error(`Invalid configuration: tile ${index} max_hold_seconds must be between 1 and 3600`);
+        }
+      } else if (tile.type === "image" && tile.refresh_seconds != null && (!Number.isFinite(tile.refresh_seconds) || tile.refresh_seconds < 1 || tile.refresh_seconds > 86400)) {
+        throw new Error(`Invalid configuration: tile ${index} refresh_seconds must be between 1 and 86400`);
       } else if (tile.entity != null && typeof tile.entity !== "string") {
         throw new Error(`Invalid configuration: tile ${index} entity must be an entity id`);
       }
@@ -303,28 +308,70 @@ class HaIndiCard extends HTMLElement {
 
   disconnectedCallback() {
     this._releaseActivePress();
+    this._clearTileIntervals();
   }
 
   _releaseActivePress() {
+    if (this._pressTimers) {
+      this._pressTimers.forEach((timer) => clearTimeout(timer));
+      this._pressTimers.clear();
+    }
     if (this._activePresses && this._hass) {
       this._activePresses.forEach((entityId) => this._releasePress(entityId));
     }
     this._activePresses = new Set();
   }
 
-  // Calls turn_off for a held hand-control entity. If the service call fails,
-  // the button already looks released but the mount may still be slewing -
-  // re-add the entity so the next release attempt retries it, and surface
-  // the failure loudly rather than leaving it stuck silently.
-  _releasePress(entityId) {
-    this._hass.callService(domainOf(entityId), "turn_off", { entity_id: entityId }).catch((err) => {
-      if (!this._activePresses) this._activePresses = new Set();
-      this._activePresses.add(entityId);
-      console.error(`ha-indi-card: failed to release ${entityId}`, err);
+  // Route every service action through one error path so failed controls are visible.
+  _call(domain, service, data, options = {}) {
+    const fail = (err) => {
+      console.error(`ha-indi-card: ${domain}.${service} failed`, err);
+      if (options.onError) options.onError(err);
+      const detail = (err && err.message) || String(err);
       fireEvent(this, "hass-notification", {
-        message: `Hand control: couldn't stop ${entityId} - it may still be moving. ${(err && err.message) || err}`,
+        message: `${options.message || `Couldn't ${service} ${data.entity_id || "entity"}`}. ${detail}`,
       });
+      return false;
+    };
+    try {
+      return Promise.resolve(this._hass.callService(domain, service, data)).catch(fail);
+    } catch (err) {
+      return Promise.resolve(fail(err));
+    }
+  }
+
+  // A failed release stays tracked so the next pointer event can retry it.
+  _releasePress(entityId) {
+    const timer = this._pressTimers && this._pressTimers.get(entityId);
+    if (timer) {
+      clearTimeout(timer);
+      this._pressTimers.delete(entityId);
+    }
+    this._call(domainOf(entityId), "turn_off", { entity_id: entityId }, {
+      message: `Hand control: couldn't stop ${entityId} - it may still be moving`,
+      onError: () => {
+        if (!this._activePresses) this._activePresses = new Set();
+        this._activePresses.add(entityId);
+      },
     });
+  }
+
+  _stopAllMotion(tileConfig) {
+    const entityIds = [...new Set(["north", "south", "east", "west"].map((dir) => tileConfig[dir]).filter(Boolean))];
+    entityIds.forEach((entityId) => {
+      if (this._activePresses) this._activePresses.delete(entityId);
+      const timer = this._pressTimers && this._pressTimers.get(entityId);
+      if (timer) {
+        clearTimeout(timer);
+        this._pressTimers.delete(entityId);
+      }
+      this._releasePress(entityId);
+    });
+  }
+
+  _clearTileIntervals() {
+    (this._tileIntervals || []).forEach((timer) => clearInterval(timer));
+    this._tileIntervals = [];
   }
 
   _handleClick(ev) {
@@ -332,7 +379,7 @@ class HaIndiCard extends HTMLElement {
     if (toggle) {
       ev.stopPropagation();
       const entityId = toggle.dataset.toggle;
-      this._hass.callService(domainOf(entityId), "toggle", { entity_id: entityId });
+      this._call(domainOf(entityId), "toggle", { entity_id: entityId });
       return;
     }
     const row = ev.target.closest("[data-more-info]");
@@ -387,11 +434,10 @@ class HaIndiCard extends HTMLElement {
       if (!stale) return;
     }
 
-    // A full rebuild tears down and rebuilds every tile, including a
-    // hand-control button that may be mid-press; release it first so
-    // turn_off always fires exactly once instead of leaving the mount
-    // slewing with no way to stop it.
+    // A full rebuild tears down and rebuilds every tile, including controls
+    // that may be active. Release motion and clear image refresh timers first.
     this._releaseActivePress();
+    this._clearTileIntervals();
 
     while (this._contentEl.firstChild) {
       this._contentEl.removeChild(this._contentEl.firstChild);
@@ -790,7 +836,8 @@ class HaIndiCard extends HTMLElement {
       const stateObj = entityId && hass ? hass.states[entityId] : undefined;
       const name = tileConfig.name || shortEntityName(hass, entityId, stateObj) || "Camera";
       const picture = stateObj && stateObj.attributes.entity_picture;
-      return { name, picture };
+      const lastUpdated = stateObj && stateObj.last_updated;
+      return { name, picture, lastUpdated };
     };
     const icon = tileConfig.icon || TILE_TYPE_DEFAULT_ICON.image;
 
@@ -813,18 +860,27 @@ class HaIndiCard extends HTMLElement {
 
     const { el, nameEl } = this._buildTileShell({ icon, name: initial.name, moreInfoEntityId: entityId, footer });
 
+    let lastUpdated = initial.lastUpdated;
+    let currentPicture = initial.picture;
+    const refreshImage = () => {
+      if (!imgEl || !currentPicture) return;
+      const url = new URL(currentPicture, window.location.href);
+      url.searchParams.set("ha_indi_refresh", String(Date.now()));
+      imgEl.src = url.toString();
+    };
+    if (imgEl && tileConfig.refresh_seconds) {
+      if (!this._tileIntervals) this._tileIntervals = [];
+      this._tileIntervals.push(setInterval(refreshImage, tileConfig.refresh_seconds * 1000));
+    }
+
     const update = (hass) => {
       const meta = computeMeta(hass);
-      // Whether the entity currently has a picture decides whether the tile
-      // shows an <img> or the placeholder div; that structure was fixed at
-      // build time, so a transition between the two needs a full rebuild.
       if (!!meta.picture !== !!initial.picture) return false;
       nameEl.textContent = meta.name;
-      // imgEl.src is the resolved absolute URL; entity_picture is typically a
-      // relative path, so comparing the two is always unequal and would
-      // reassign src (and retrigger a fetch) on every hass update.
-      if (imgEl && meta.picture && imgEl.getAttribute("src") !== meta.picture) {
-        imgEl.src = meta.picture;
+      if (imgEl && meta.picture && (meta.picture !== currentPicture || meta.lastUpdated !== lastUpdated)) {
+        currentPicture = meta.picture;
+        lastUpdated = meta.lastUpdated;
+        refreshImage();
         imgEl.alt = meta.name;
       }
       return true;
@@ -859,11 +915,24 @@ class HaIndiCard extends HTMLElement {
           if (!this._activePresses) this._activePresses = new Set();
           if (this._activePresses.has(entityId)) return;
           this._activePresses.add(entityId);
-          this._hass.callService(domainOf(entityId), "turn_on", { entity_id: entityId });
+          this._call(domainOf(entityId), "turn_on", { entity_id: entityId }, {
+            message: `Hand control: couldn't start ${entityId}`,
+          });
+          if (tileConfig.max_hold_seconds) {
+            if (!this._pressTimers) this._pressTimers = new Map();
+            const timer = setTimeout(() => {
+              if (!this._activePresses || !this._activePresses.has(entityId)) return;
+              this._activePresses.delete(entityId);
+              this._releasePress(entityId);
+            }, tileConfig.max_hold_seconds * 1000);
+            this._pressTimers.set(entityId, timer);
+          }
         };
         const release = (ev) => {
-          ev.preventDefault();
-          ev.stopPropagation();
+          if (ev) {
+            ev.preventDefault();
+            ev.stopPropagation();
+          }
           if (!this._activePresses || !this._activePresses.has(entityId)) return;
           this._activePresses.delete(entityId);
           this._releasePress(entityId);
@@ -886,11 +955,20 @@ class HaIndiCard extends HTMLElement {
       pad.appendChild(btn);
     });
 
-    const center = document.createElement("div");
-    center.className = "handcontrol-center";
+    const center = document.createElement("button");
+    center.type = "button";
+    center.className = "handcontrol-center handcontrol-stop-all";
+    center.setAttribute("aria-label", "Stop all motion");
+    center.title = "Stop all motion";
     const centerIcon = document.createElement("ha-icon");
-    centerIcon.icon = icon;
+    centerIcon.icon = "mdi:stop-circle-outline";
     center.appendChild(centerIcon);
+    center.appendChild(document.createTextNode("STOP"));
+    center.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      this._stopAllMotion(tileConfig);
+    });
     pad.appendChild(center);
 
     const footer = document.createElement("div");
@@ -924,13 +1002,13 @@ class HaIndiCard extends HTMLElement {
       ev.stopPropagation();
       if (!entityId) return;
       if (domain === "script") {
-        this._hass.callService("script", "turn_on", { entity_id: entityId });
+        this._call("script", "turn_on", { entity_id: entityId });
       } else if (domain === "button") {
-        this._hass.callService("button", "press", { entity_id: entityId });
+        this._call("button", "press", { entity_id: entityId });
       } else if (domain === "scene") {
-        this._hass.callService("scene", "turn_on", { entity_id: entityId });
+        this._call("scene", "turn_on", { entity_id: entityId });
       } else {
-        this._hass.callService(domain, "turn_on", { entity_id: entityId });
+        this._call(domain, "turn_on", { entity_id: entityId });
       }
     });
 
@@ -972,7 +1050,7 @@ class HaIndiCard extends HTMLElement {
         ev.stopPropagation();
         const option = options[ev.detail.index];
         if (option && option !== getCurrentValue()) {
-          this._hass.callService("select", "select_option", { entity_id: entityId, option });
+          this._call("select", "select_option", { entity_id: entityId, option });
         }
       });
       selectEl.addEventListener("click", (ev) => ev.stopPropagation());
@@ -992,7 +1070,7 @@ class HaIndiCard extends HTMLElement {
     nativeSelect.addEventListener("click", (ev) => ev.stopPropagation());
     nativeSelect.addEventListener("change", (ev) => {
       ev.stopPropagation();
-      this._hass.callService("select", "select_option", { entity_id: entityId, option: ev.target.value });
+      this._call("select", "select_option", { entity_id: entityId, option: ev.target.value });
     });
     return nativeSelect;
   }
@@ -1032,7 +1110,7 @@ class HaIndiCard extends HTMLElement {
       pending = next;
       const unit = current.attributes && current.attributes.unit_of_measurement;
       valueEl.textContent = unit ? `${next} ${unit}` : String(next);
-      this._hass.callService(domain, "set_value", { entity_id: entityId, value: next });
+      this._call(domain, "set_value", { entity_id: entityId, value: next });
     };
 
     const wrap = document.createElement("div");
@@ -1172,8 +1250,12 @@ class HaIndiCard extends HTMLElement {
       .handcontrol-north { grid-column: 2; grid-row: 1; }
       .handcontrol-west { grid-column: 1; grid-row: 2; }
       .handcontrol-center {
-        grid-column: 2; grid-row: 2; display: flex; align-items: center; justify-content: center;
-        color: var(--secondary-text-color);
+        grid-column: 2; grid-row: 2; display: flex; flex-direction: column; gap: 2px;
+        align-items: center; justify-content: center; color: var(--secondary-text-color);
+      }
+      .handcontrol-stop-all {
+        border: 1px solid var(--error-color, #db4437); background: none; border-radius: 8px;
+        color: var(--error-color, #db4437); cursor: pointer; font-size: 10px; font-weight: 700;
       }
       .handcontrol-east { grid-column: 3; grid-row: 2; }
       .handcontrol-south { grid-column: 2; grid-row: 3; }

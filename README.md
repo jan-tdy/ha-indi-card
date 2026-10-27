@@ -66,6 +66,7 @@ tiles:
     south: switch.telescope_simulator_motion_south
     east: switch.telescope_simulator_motion_east
     west: switch.telescope_simulator_motion_west
+    max_hold_seconds: 30
   - type: select
     entity: select.telescope_simulator_parking
   - type: gauge
@@ -78,6 +79,7 @@ tiles:
     entity: camera.guide_cam
     width: 2
     height: 2
+    refresh_seconds: 10
   - type: button
     name: Refresh
     entity: script.refresh_indi_server
@@ -100,9 +102,11 @@ Each entry in `tiles` has a `type` plus fields specific to it, and an optional `
 | `stepper`     | `entity`                                   | `number`/`input_number`, uses its `min`/`max`/`step`. |
 | `gauge`       | `entity`, optional `min`/`max`             | Numeric; falls back to the entity's own `min`/`max`. |
 | `coordinate`  | `entities` (list of 2+)                    | Shown stacked in one tile.                         |
-| `image`       | `entity`                                   | Any `camera.*` entity.                             |
-| `handcontrol` | `north`, `south`, `east`, `west`           | Each a `switch` entity; press-and-hold slewing.    |
+| `image`       | `entity`, optional `refresh_seconds`             | Any `camera.*` entity; refreshes on entity updates and at the optional interval (1-86400 seconds). |
+| `handcontrol` | `north`, `south`, `east`, `west`, optional `max_hold_seconds` | Each direction is a `switch`; includes a stop-all button. The optional 1-3600 second hold limit releases a direction while the card remains connected. |
 | `button`      | `entity`, optional `label`                 | A `script`/`button`/`scene` entity; runs on tap.   |
+
+A hand-control hold limit is enforced by the browser and sends a Home Assistant stop service call. It cannot guarantee a stop if the browser or Home Assistant connection fails; keep mount-side slew limits and emergency stops enabled.
 
 ## Roadmap
 
