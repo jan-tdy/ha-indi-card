@@ -22,7 +22,7 @@ An advanced Home Assistant Lovelace card for [`ha-indi-client`](https://github.c
   - **Gauge** — a numeric entity as a circular gauge.
   - **Coordinates** — two entities (e.g. RA + DEC) combined into one tile.
   - **Camera image** — a live snapshot from any `camera.*` entity.
-  - **Hand control** — a compass-style N/S/E/W press-and-hold pad wired to four switch entities, for slewing a mount the way a real hand controller works.
+  - **Hand control** — a compass-style press-and-hold pad wired to switch entities (N/S/E/W, plus optional N-E/N-W/S-E/S-W), with an optional slew rate dropdown, for slewing a mount the way a real hand controller works.
   - **Button** — one tap runs a `script`/`button`/`scene` entity (e.g. a quick "Park" or "Refresh" action).
 - **Resizable, drag-to-reorder tiles** — set a tile's width/height (1-4 grid cells) right in its row in the editor, and drag tiles by their handle to reorder them.
 - **The card itself is resizable** — it implements Home Assistant's grid sizing so, in a sections-view dashboard, you can drag-resize the whole card like any built-in one.
@@ -66,6 +66,9 @@ tiles:
     south: switch.telescope_simulator_motion_south
     east: switch.telescope_simulator_motion_east
     west: switch.telescope_simulator_motion_west
+    northeast: switch.telescope_simulator_motion_north_east
+    southwest: switch.telescope_simulator_motion_south_west
+    slew_rate: select.telescope_simulator_slew_rate
     max_hold_seconds: 30
   - type: select
     entity: select.telescope_simulator_parking
@@ -103,7 +106,7 @@ Each entry in `tiles` has a `type` plus fields specific to it, and an optional `
 | `gauge`       | `entity`, optional `min`/`max`             | Numeric; falls back to the entity's own `min`/`max`. |
 | `coordinate`  | `entities` (list of 2+)                    | Shown stacked in one tile.                         |
 | `image`       | `entity`, optional `refresh_seconds`             | Any `camera.*` entity; refreshes on entity updates and at the optional interval (1-86400 seconds). |
-| `handcontrol` | `north`, `south`, `east`, `west`, optional `max_hold_seconds` | Each direction is a `switch`; includes a stop-all button. The optional 1-3600 second hold limit releases a direction while the card remains connected. |
+| `handcontrol` | `north`, `south`, `east`, `west`; optional `northeast`, `northwest`, `southeast`, `southwest`, `slew_rate`, `max_hold_seconds` | Each direction is a `switch`; a diagonal button appears only when its entity is set. `slew_rate` is a `select` shown as a dropdown under the pad. Includes a stop-all button. The optional 1-3600 second hold limit releases a direction while the card remains connected. |
 | `button`      | `entity`, optional `label`                 | A `script`/`button`/`scene` entity; runs on tap.   |
 
 A hand-control hold limit is enforced by the browser and sends a Home Assistant stop service call. It cannot guarantee a stop if the browser or Home Assistant connection fails; keep mount-side slew limits and emergency stops enabled.

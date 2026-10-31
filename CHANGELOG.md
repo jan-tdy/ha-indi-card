@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.5.0
+
+- `handcontrol` tile: four optional diagonal entities (`northeast`, `northwest`, `southeast`, `southwest`). A diagonal button is drawn only when its entity is set, so existing four-way configs look the same. Stop-all releases diagonals too.
+- `handcontrol` tile: optional `slew_rate` entity (a `select`), shown as a dropdown under the pad. It follows the live state and appears or disappears with its entity.
+- Fixed the editor's mount suggestion mapping directions by plain substring: a "Motion North East" switch was taken as both `north` and `east`. Names are now classified with diagonals checked first, and the suggestion also picks up diagonal switches and a "Slew rate" select when present.
+- The editor's hand-control composer offers the diagonal and slew rate pickers as well; at least one direction is still required.
+
 ## v1.4.2
 
 - Fixed the `image` tile reassigning `img.src` on every Home Assistant state change: the update compared the resolved absolute `img.src` URL against a typically relative `entity_picture`, so they never matched and the snapshot was refetched/flickered continuously. The update now compares against the `src` attribute.
