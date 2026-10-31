@@ -1,4 +1,4 @@
-const CARD_VERSION = "1.4.3";
+const CARD_VERSION = "1.5.0";
 const INDI_PLATFORM = "indi_client";
 
 const FALLBACK_ICONS = {
@@ -64,6 +64,32 @@ const TILE_TYPE_DEFAULT_ICON = {
 const TILE_DEFAULT_SPAN = {
   image: [2, 2],
   handcontrol: [2, 2],
+};
+
+// Hand-control directions. The four cardinals are always drawn; a diagonal
+// button is drawn only when its entity is configured, so a four-way mount
+// keeps the original pad.
+const HANDCONTROL_CARDINALS = ["north", "south", "east", "west"];
+const HANDCONTROL_DIRECTIONS = [...HANDCONTROL_CARDINALS, "northeast", "northwest", "southeast", "southwest"];
+const HANDCONTROL_DIRECTION_LABELS = {
+  north: "North",
+  south: "South",
+  east: "East",
+  west: "West",
+  northeast: "North-east",
+  northwest: "North-west",
+  southeast: "South-east",
+  southwest: "South-west",
+};
+const HANDCONTROL_DIRECTION_ICONS = {
+  north: "mdi:chevron-up",
+  south: "mdi:chevron-down",
+  east: "mdi:chevron-right",
+  west: "mdi:chevron-left",
+  northeast: "mdi:arrow-top-right",
+  northwest: "mdi:arrow-top-left",
+  southeast: "mdi:arrow-bottom-right",
+  southwest: "mdi:arrow-bottom-left",
 };
 
 function domainOf(entityId) {
@@ -171,6 +197,34 @@ function findEntityByNamePattern(entityIds, hass, pattern, domains) {
   });
 }
 
+/**
+ * Classifies an entity name as a hand-control direction, or undefined.
+ * Diagonals are tested first: "Motion North East" contains both "north" and
+ * "east" and must not be taken for either cardinal. Abbreviated diagonals
+ * ("N/E", "NE", "S-W") are accepted; single letters are never accepted for
+ * cardinals, so an "N" or "E" elsewhere in a name is not a direction.
+ */
+function directionOf(name) {
+  const text = String(name || "").toLowerCase().replace(/[\/_-]+/g, " ");
+  if (/\bnorth\s*east\b|\bn\s*e\b/.test(text)) return "northeast";
+  if (/\bnorth\s*west\b|\bn\s*w\b/.test(text)) return "northwest";
+  if (/\bsouth\s*east\b|\bs\s*e\b/.test(text)) return "southeast";
+  if (/\bsouth\s*west\b|\bs\s*w\b/.test(text)) return "southwest";
+  if (/\bnorth\b/.test(text)) return "north";
+  if (/\bsouth\b/.test(text)) return "south";
+  if (/\beast\b/.test(text)) return "east";
+  if (/\bwest\b/.test(text)) return "west";
+  return undefined;
+}
+
+function findEntityByDirection(entityIds, hass, direction, domains) {
+  return entityIds.find((id) => {
+    if (domains && !domains.includes(domainOf(id))) return false;
+    const stateObj = hass.states[id];
+    return directionOf(shortEntityName(hass, id, stateObj)) === direction;
+  });
+}
+
 function suggestTilesForDevice(device, hass) {
   const suggestions = [];
 
@@ -183,15 +237,19 @@ function suggestTilesForDevice(device, hass) {
     });
   }
 
-  const north = findEntityByNamePattern(device.entityIds, hass, /north/i, ["switch"]);
-  const south = findEntityByNamePattern(device.entityIds, hass, /south/i, ["switch"]);
-  const east = findEntityByNamePattern(device.entityIds, hass, /east/i, ["switch"]);
-  const west = findEntityByNamePattern(device.entityIds, hass, /west/i, ["switch"]);
-  if (north && south && east && west) {
-    suggestions.push({
-      label: `Hand control (${device.name})`,
-      tile: { type: "handcontrol", north, south, east, west, name: device.name },
+  const directions = {};
+  HANDCONTROL_DIRECTIONS.forEach((dir) => {
+    directions[dir] = findEntityByDirection(device.entityIds, hass, dir, ["switch"]);
+  });
+  if (HANDCONTROL_CARDINALS.every((dir) => directions[dir])) {
+    const tile = { type: "handcontrol" };
+    HANDCONTROL_DIRECTIONS.forEach((dir) => {
+      if (directions[dir]) tile[dir] = directions[dir];
     });
+    const slewRate = findEntityByNamePattern(device.entityIds, hass, /\bslew\s*rate\b/i, ["select"]);
+    if (slewRate) tile.slew_rate = slewRate;
+    tile.name = device.name;
+    suggestions.push({ label: `Hand control (${device.name})`, tile });
   }
 
   const camera = device.entityIds.find((id) => domainOf(id) === "camera");
@@ -237,9 +295,9 @@ class HaIndiCard extends HTMLElement {
           throw new Error(`Invalid configuration: tile ${index} entities must be a list`);
         }
       } else if (tile.type === "handcontrol") {
-        ["north", "south", "east", "west"].forEach((dir) => {
-          if (tile[dir] != null && typeof tile[dir] !== "string") {
-            throw new Error(`Invalid configuration: tile ${index} ${dir} must be an entity id`);
+        [...HANDCONTROL_DIRECTIONS, "slew_rate"].forEach((key) => {
+          if (tile[key] != null && typeof tile[key] !== "string") {
+            throw new Error(`Invalid configuration: tile ${index} ${key} must be an entity id`);
           }
         });
         if (tile.max_hold_seconds != null && (!Number.isFinite(tile.max_hold_seconds) || tile.max_hold_seconds < 1 || tile.max_hold_seconds > 3600)) {
@@ -357,7 +415,7 @@ class HaIndiCard extends HTMLElement {
   }
 
   _stopAllMotion(tileConfig) {
-    const entityIds = [...new Set(["north", "south", "east", "west"].map((dir) => tileConfig[dir]).filter(Boolean))];
+    const entityIds = [...new Set(HANDCONTROL_DIRECTIONS.map((dir) => tileConfig[dir]).filter(Boolean))];
     entityIds.forEach((entityId) => {
       if (this._activePresses) this._activePresses.delete(entityId);
       const timer = this._pressTimers && this._pressTimers.get(entityId);
@@ -476,7 +534,7 @@ class HaIndiCard extends HTMLElement {
         built = this._buildImageTile(tile, hass);
         break;
       case "handcontrol":
-        built = this._buildHandControlTile(tile);
+        built = this._buildHandControlTile(tile, hass);
         break;
       case "button":
         built = this._buildButtonTile(tile, hass);
@@ -889,22 +947,22 @@ class HaIndiCard extends HTMLElement {
     return { el, update };
   }
 
-  _buildHandControlTile(tileConfig) {
+  _buildHandControlTile(tileConfig, hass) {
     const name = tileConfig.name || "Hand control";
     const icon = tileConfig.icon || TILE_TYPE_DEFAULT_ICON.handcontrol;
-    const directions = { north: "mdi:chevron-up", south: "mdi:chevron-down", east: "mdi:chevron-right", west: "mdi:chevron-left" };
 
     const pad = document.createElement("div");
     pad.className = "handcontrol-pad";
 
-    Object.keys(directions).forEach((dir) => {
+    HANDCONTROL_DIRECTIONS.forEach((dir) => {
       const entityId = tileConfig[dir];
+      if (!entityId && !HANDCONTROL_CARDINALS.includes(dir)) return;
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = `handcontrol-btn handcontrol-${dir}`;
-      btn.setAttribute("aria-label", dir.charAt(0).toUpperCase() + dir.slice(1));
+      btn.setAttribute("aria-label", HANDCONTROL_DIRECTION_LABELS[dir]);
       const iconEl = document.createElement("ha-icon");
-      iconEl.icon = directions[dir];
+      iconEl.icon = HANDCONTROL_DIRECTION_ICONS[dir];
       btn.appendChild(iconEl);
       if (!entityId) {
         btn.disabled = true;
@@ -974,11 +1032,44 @@ class HaIndiCard extends HTMLElement {
     const footer = document.createElement("div");
     footer.appendChild(pad);
 
+    // The pad itself never changes: the directional buttons fire services
+    // against the entity ids from the tile config. Only the optional slew
+    // rate dropdown follows hass, so it is the only thing refreshed here.
+    let update = () => true;
+    const slewEntityId = tileConfig.slew_rate;
+    if (slewEntityId) {
+      const slewWrap = document.createElement("div");
+      slewWrap.className = "tile-select handcontrol-slew";
+      let slewSelect = null;
+
+      const buildSlewSelect = (stateObj) => {
+        slewSelect = this._buildSelectEl(slewEntityId, stateObj, () => {
+          const live = this._hass && this._hass.states[slewEntityId];
+          return live ? live.state : undefined;
+        });
+        slewWrap.appendChild(slewSelect);
+      };
+
+      const initialSlew = hass && hass.states[slewEntityId];
+      if (initialSlew) {
+        buildSlewSelect(initialSlew);
+      } else {
+        slewWrap.classList.add("handcontrol-slew-unavailable");
+        slewWrap.textContent = "Slew rate unavailable";
+      }
+      footer.appendChild(slewWrap);
+
+      update = (hass) => {
+        const stateObj = hass && hass.states[slewEntityId];
+        // Entity appeared or disappeared since build: rebuild to match.
+        if (!!stateObj !== !!slewSelect) return false;
+        if (slewSelect && slewSelect.value !== stateObj.state) slewSelect.value = stateObj.state;
+        return true;
+      };
+    }
+
     const { el } = this._buildTileShell({ icon, name, footer });
-    // Nothing here depends on hass - the directional buttons just fire
-    // services against the entity ids from the tile config - so there is
-    // never anything to refresh.
-    return { el, update: () => {} };
+    return { el, update };
   }
 
   _buildButtonTile(tileConfig, hass) {
@@ -1258,6 +1349,10 @@ class HaIndiCard extends HTMLElement {
         color: var(--error-color, #db4437); cursor: pointer; font-size: 10px; font-weight: 700;
       }
       .handcontrol-east { grid-column: 3; grid-row: 2; }
+      .handcontrol-northwest { grid-column: 1; grid-row: 1; }
+      .handcontrol-northeast { grid-column: 3; grid-row: 1; }
+      .handcontrol-southwest { grid-column: 1; grid-row: 3; }
+      .handcontrol-southeast { grid-column: 3; grid-row: 3; }
       .handcontrol-south { grid-column: 2; grid-row: 3; }
       .handcontrol-btn {
         border-radius: 50%; border: 1px solid var(--divider-color); background: none;
@@ -1266,6 +1361,8 @@ class HaIndiCard extends HTMLElement {
       }
       .handcontrol-btn:active { background: var(--primary-color); color: var(--text-primary-color, #fff); }
       .handcontrol-btn:disabled { opacity: 0.3; cursor: default; }
+      .handcontrol-slew { margin-top: 8px; }
+      .handcontrol-slew-unavailable { color: var(--secondary-text-color); font-size: 0.85em; text-align: center; }
     `;
   }
 }
@@ -1564,8 +1661,13 @@ class HaIndiCardEditor extends HTMLElement {
       });
       fieldsWrap.appendChild(p2);
     } else if (type === "handcontrol") {
-      ["north", "south", "east", "west"].forEach((dir) => {
-        const p = buildPicker(dir.charAt(0).toUpperCase() + dir.slice(1), ["switch"]);
+      const note = document.createElement("div");
+      note.className = "note";
+      note.textContent = "Pick at least one direction. Diagonals and the slew rate are optional.";
+      fieldsWrap.appendChild(note);
+
+      HANDCONTROL_DIRECTIONS.forEach((dir) => {
+        const p = buildPicker(HANDCONTROL_DIRECTION_LABELS[dir], ["switch"]);
         p.value = this._composerEntities[dir] || "";
         p.addEventListener("value-changed", (ev) => {
           ev.stopPropagation();
@@ -1573,6 +1675,14 @@ class HaIndiCardEditor extends HTMLElement {
         });
         fieldsWrap.appendChild(p);
       });
+
+      const slewPicker = buildPicker("Slew rate", ["select"]);
+      slewPicker.value = this._composerEntities.slew_rate || "";
+      slewPicker.addEventListener("value-changed", (ev) => {
+        ev.stopPropagation();
+        this._composerEntities.slew_rate = ev.detail.value;
+      });
+      fieldsWrap.appendChild(slewPicker);
     } else {
       const domains =
         type === "toggle"
@@ -1608,9 +1718,13 @@ class HaIndiCardEditor extends HTMLElement {
         if (entities.length < 2) return;
         tile = { type: "coordinate", entities, name: this._composerName || undefined };
       } else if (type === "handcontrol") {
-        const { north, south, east, west } = this._composerEntities;
-        if (!north && !south && !east && !west) return;
-        tile = { type: "handcontrol", north, south, east, west, name: this._composerName || undefined };
+        const directions = {};
+        HANDCONTROL_DIRECTIONS.forEach((dir) => {
+          if (this._composerEntities[dir]) directions[dir] = this._composerEntities[dir];
+        });
+        if (!Object.keys(directions).length) return;
+        tile = { type: "handcontrol", ...directions, name: this._composerName || undefined };
+        if (this._composerEntities.slew_rate) tile.slew_rate = this._composerEntities.slew_rate;
       } else {
         if (!this._composerEntities.entity) return;
         tile = { type, entity: this._composerEntities.entity, name: this._composerName || undefined };
