@@ -367,6 +367,11 @@ class HaIndiCard extends HTMLElement {
   disconnectedCallback() {
     this._releaseActivePress();
     this._clearTileIntervals();
+    // _render()'s fast path skips rebuilding (and thus re-arming image
+    // refresh intervals) whenever _tilesSource still matches the current
+    // tile list. Without this, reconnecting would keep that match and the
+    // intervals just cleared above would never come back.
+    this._tilesSource = null;
   }
 
   _releaseActivePress() {
