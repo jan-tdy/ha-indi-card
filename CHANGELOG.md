@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Fixed `image` tile `refresh_seconds` auto-refresh stopping permanently after the card is detached and reattached (e.g. moved between dashboard views). Reconnecting now rebuilds the tiles so the refresh timer is re-armed instead of staying cleared.
+
 ## v1.5.0
 
 - `handcontrol` tile: four optional diagonal entities (`northeast`, `northwest`, `southeast`, `southwest`). A diagonal button is drawn only when its entity is set, so existing four-way configs look the same. Stop-all releases diagonals too.
