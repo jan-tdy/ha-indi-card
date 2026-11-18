@@ -328,7 +328,11 @@ class HaIndiCard extends HTMLElement {
     // hand-control button mid-press must still never be cut short by an
     // unrelated update elsewhere, so skip entirely while a direction is
     // held; the skipped update is picked up as soon as the button is
-    // released and _render() runs again.
+    // released and _render() runs again. Entities whose release failed and
+    // are only awaiting a retry (_stuckReleases, see _releasePress) don't
+    // count as "held" here - otherwise a single failed turn_off would
+    // freeze the whole card until the same button happened to be pressed
+    // again, rather than just that direction staying tracked for retry.
     if (this._activePresses && this._activePresses.size) return;
     this._render();
   }
@@ -379,8 +383,9 @@ class HaIndiCard extends HTMLElement {
       this._pressTimers.forEach((timer) => clearTimeout(timer));
       this._pressTimers.clear();
     }
-    if (this._activePresses && this._hass) {
-      this._activePresses.forEach((entityId) => this._releasePress(entityId));
+    if (this._hass) {
+      const pending = new Set([...(this._activePresses || []), ...(this._stuckReleases || [])]);
+      pending.forEach((entityId) => this._releasePress(entityId));
     }
     this._activePresses = new Set();
   }
@@ -403,18 +408,22 @@ class HaIndiCard extends HTMLElement {
     }
   }
 
-  // A failed release stays tracked so the next pointer event can retry it.
+  // A failed release stays tracked in _stuckReleases - not _activePresses,
+  // which set hass treats as "button currently held" and uses to decide
+  // whether to skip rendering - so the next pointer event on this entity
+  // can retry it without freezing the whole card in the meantime.
   _releasePress(entityId) {
     const timer = this._pressTimers && this._pressTimers.get(entityId);
     if (timer) {
       clearTimeout(timer);
       this._pressTimers.delete(entityId);
     }
+    if (this._stuckReleases) this._stuckReleases.delete(entityId);
     this._call(domainOf(entityId), "turn_off", { entity_id: entityId }, {
       message: `Hand control: couldn't stop ${entityId} - it may still be moving`,
       onError: () => {
-        if (!this._activePresses) this._activePresses = new Set();
-        this._activePresses.add(entityId);
+        if (!this._stuckReleases) this._stuckReleases = new Set();
+        this._stuckReleases.add(entityId);
       },
     });
   }
@@ -978,6 +987,7 @@ class HaIndiCard extends HTMLElement {
           if (!this._activePresses) this._activePresses = new Set();
           if (this._activePresses.has(entityId)) return;
           this._activePresses.add(entityId);
+          if (this._stuckReleases) this._stuckReleases.delete(entityId);
           this._call(domainOf(entityId), "turn_on", { entity_id: entityId }, {
             message: `Hand control: couldn't start ${entityId}`,
           });
