@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Fixed `image` tile `refresh_seconds` auto-refresh stopping permanently after the card is detached and reattached (e.g. moved between dashboard views). Reconnecting now rebuilds the tiles so the refresh timer is re-armed instead of staying cleared.
+- Fixed the whole card freezing after a `handcontrol` release's `turn_off` call failed: the failed entity was tracked in the same set that `set hass` checks to decide whether a direction is currently held, so it kept skipping every re-render until that same button happened to be pressed again. Failed releases now stay tracked separately for retry and no longer block rendering.
 
 ## v1.5.0
 
