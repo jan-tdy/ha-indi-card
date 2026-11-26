@@ -1198,6 +1198,7 @@ class HaIndiCard extends HTMLElement {
     // hass state (which only updates after the device round trip) and send
     // the same value twice. Cleared once the live state catches up.
     let pending = null;
+    let pendingLastUpdated = null;
 
     const setValue = (delta) => {
       // The element persists across hass updates now (see _render), so read
@@ -1214,9 +1215,25 @@ class HaIndiCard extends HTMLElement {
       // (0.1+0.2 = 0.30000000000000004) that number entities may reject.
       const next = clamp(roundToStep(currentNum + delta, step));
       pending = next;
+      pendingLastUpdated = current.last_updated;
       const unit = current.attributes && current.attributes.unit_of_measurement;
       valueEl.textContent = unit ? `${next} ${unit}` : String(next);
-      this._call(domain, "set_value", { entity_id: entityId, value: next });
+      this._call(domain, "set_value", { entity_id: entityId, value: next }, {
+        onError: () => {
+          if (pending !== next) return;
+          pending = null;
+          pendingLastUpdated = null;
+          const latest = (this._hass && this._hass.states[entityId]) || current;
+          valueEl.textContent = formatState(this._hass, latest);
+        },
+      });
+      setTimeout(() => {
+        if (pending !== next) return;
+        pending = null;
+        pendingLastUpdated = null;
+        const latest = (this._hass && this._hass.states[entityId]) || current;
+        valueEl.textContent = formatState(this._hass, latest);
+      }, 3000);
     };
 
     const wrap = document.createElement("div");
@@ -1259,8 +1276,12 @@ class HaIndiCard extends HTMLElement {
 
     const applyLiveState = (liveStateObj) => {
       const liveNum = Number(liveStateObj.state);
-      if (pending !== null && !Number.isNaN(liveNum) && roundToStep(liveNum, step) === pending) {
+      if (pending !== null && (
+        (!Number.isNaN(liveNum) && roundToStep(liveNum, step) === pending) ||
+        (pendingLastUpdated && liveStateObj.last_updated !== pendingLastUpdated)
+      )) {
         pending = null;
+        pendingLastUpdated = null;
       }
       setDisabled(Number.isNaN(liveNum));
       if (pending === null) {
